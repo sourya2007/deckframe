@@ -1,0 +1,31 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - button "Select" [ref=e6]
+      - button "Move" [ref=e11]
+      - button "Cut" [ref=e18]
+      - button "Effects" [ref=e26]
+      - button "AI" [ref=e31]
+      - button "Library" [ref=e35]
+    - generic [ref=e40]:
+      - button "Export" [ref=e41]
+      - button "Settings" [ref=e46]
+  - generic [ref=e51]:
+    - generic [ref=e53]:
+      - generic [ref=e54]: DeckFrame
+      - generic [ref=e58]:
+        - generic [ref=e59] [cursor=pointer]: File
+        - generic [ref=e60] [cursor=pointer]: Edit
+        - generic [ref=e61] [cursor=pointer]: View
+        - generic [ref=e62] [cursor=pointer]: Window
+    - generic [ref=e69]:
+      - generic [ref=e71]:
+        - button "Start Recording" [ref=e72]
+        - generic [ref=e73] [cursor=pointer]: or Drag video to start editing
+      - generic [ref=e79]:
+        - heading "Background" [level=3] [ref=e80]
+        - generic [ref=e81]:
+          - generic [ref=e82] [cursor=pointer]: Image
+          - generic [ref=e84] [cursor=pointer]: Color
+          - generic [ref=e86] [cursor=pointer]: Gradient
+          - button "Upload Custom" [ref=e88]

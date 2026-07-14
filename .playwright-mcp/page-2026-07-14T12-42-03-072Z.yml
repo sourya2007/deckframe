@@ -1,0 +1,150 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - button "Select" [ref=e6]
+      - button "Move" [ref=e11]
+      - button "Cut" [ref=e18]
+      - button "Effects" [ref=e26]
+      - button "AI" [ref=e31]
+      - button "Library" [ref=e35]
+    - generic [ref=e40]:
+      - button "Export" [ref=e41]
+      - button "Settings" [ref=e46]
+  - generic [ref=e51]:
+    - generic [ref=e53]:
+      - generic [ref=e54]: DeckFrame
+      - generic [ref=e58]:
+        - generic [ref=e59] [cursor=pointer]: File
+        - generic [ref=e60] [cursor=pointer]: Edit
+        - generic [ref=e61] [cursor=pointer]: View
+        - generic [ref=e62] [cursor=pointer]: Window
+    - generic [ref=e575]:
+      - generic [ref=e576]:
+        - generic [ref=e577]:
+          - heading "Sound Asset Library Management" [level=1] [ref=e578]
+          - generic [ref=e579]:
+            - combobox [ref=e580]:
+              - option "Category" [selected]
+            - combobox [ref=e581]:
+              - option "Mood" [selected]
+            - combobox [ref=e582]:
+              - option "Duration" [selected]
+        - generic [ref=e583]:
+          - generic [ref=e584]:
+            - heading "SFX" [level=2] [ref=e585]
+            - generic [ref=e586]:
+              - generic [ref=e587] [cursor=pointer]:
+                - generic [ref=e588]:
+                  - generic [ref=e589]: Whoosh_01.wav
+                  - generic [ref=e590]: 0:05s
+                - generic [ref=e593]:
+                  - generic [ref=e594]: Impact
+                  - generic [ref=e595]: Transition
+              - generic [ref=e596] [cursor=pointer]:
+                - generic [ref=e597]:
+                  - generic [ref=e598]: Whoosh_02.wav
+                  - generic [ref=e599]: 0:05s
+                - generic [ref=e602]:
+                  - generic [ref=e603]: Impact
+                  - generic [ref=e604]: Transition
+              - generic [ref=e605] [cursor=pointer]:
+                - generic [ref=e606]:
+                  - generic [ref=e607]: Whoosh_03.wav
+                  - generic [ref=e608]: 0:05s
+                - generic [ref=e611]:
+                  - generic [ref=e612]: Impact
+                  - generic [ref=e613]: Transition
+          - generic [ref=e614]:
+            - heading "Ambient" [level=2] [ref=e615]
+            - generic [ref=e616]:
+              - generic [ref=e617] [cursor=pointer]:
+                - generic [ref=e618]:
+                  - generic [ref=e619]: Ambient_01.wav
+                  - generic [ref=e620]: 0:05s
+                - generic [ref=e623]:
+                  - generic [ref=e624]: Impact
+                  - generic [ref=e625]: Transition
+              - generic [ref=e626] [cursor=pointer]:
+                - generic [ref=e627]:
+                  - generic [ref=e628]: Cinematic_Drone_02.wav
+                  - generic [ref=e629]: 0:05s
+                - generic [ref=e632]:
+                  - generic [ref=e633]: Impact
+                  - generic [ref=e634]: Transition
+              - generic [ref=e635] [cursor=pointer]:
+                - generic [ref=e636]:
+                  - generic [ref=e637]: Whoosh_04.wav
+                  - generic [ref=e638]: 0:05s
+                - generic [ref=e641]:
+                  - generic [ref=e642]: Impact
+                  - generic [ref=e643]: Transition
+              - generic [ref=e644] [cursor=pointer]:
+                - generic [ref=e645]:
+                  - generic [ref=e646]: Whoosh_01.wav
+                  - generic [ref=e647]: 0:05s
+                - generic [ref=e650]:
+                  - generic [ref=e651]: Impact
+                  - generic [ref=e652]: Transition
+              - generic [ref=e653] [cursor=pointer]:
+                - generic [ref=e654]:
+                  - generic [ref=e655]: Cinematic_Drone_03.wav
+                  - generic [ref=e656]: 0:05s
+                - generic [ref=e659]:
+                  - generic [ref=e660]: Impact
+                  - generic [ref=e661]: Transition
+          - generic [ref=e662]:
+            - heading "UI Clicks" [level=2] [ref=e663]
+            - generic [ref=e664]:
+              - generic [ref=e665] [cursor=pointer]:
+                - generic [ref=e666]:
+                  - generic [ref=e667]: UI Clicks_01.wav
+                  - generic [ref=e668]: 0:05s
+                - generic [ref=e671]:
+                  - generic [ref=e672]: Impact
+                  - generic [ref=e673]: Transition
+              - generic [ref=e674] [cursor=pointer]:
+                - generic [ref=e675]:
+                  - generic [ref=e676]: UI Clicks_02.wav
+                  - generic [ref=e677]: 0:05s
+                - generic [ref=e680]:
+                  - generic [ref=e681]: Impact
+                  - generic [ref=e682]: Transition
+              - generic [ref=e683] [cursor=pointer]:
+                - generic [ref=e684]:
+                  - generic [ref=e685]: UI Clicks_03.wav
+                  - generic [ref=e686]: 0:05s
+                - generic [ref=e689]:
+                  - generic [ref=e690]: Impact
+                  - generic [ref=e691]: Transition
+          - generic [ref=e692]:
+            - heading "Music" [level=2] [ref=e693]
+            - generic [ref=e694]:
+              - generic [ref=e695] [cursor=pointer]:
+                - generic [ref=e696]:
+                  - generic [ref=e697]: Music_01.wav
+                  - generic [ref=e698]: 0:05s
+                - generic [ref=e701]:
+                  - generic [ref=e702]: Music
+                  - generic [ref=e703]: Tone
+                  - generic [ref=e704]: Impact
+              - generic [ref=e705] [cursor=pointer]:
+                - generic [ref=e706]:
+                  - generic [ref=e707]: Somnath_02.wav
+                  - generic [ref=e708]: 0:05s
+                - generic [ref=e711]:
+                  - generic [ref=e712]: Music
+                  - generic [ref=e713]: Tone
+                  - generic [ref=e714]: Impact
+              - generic [ref=e715] [cursor=pointer]:
+                - generic [ref=e716]:
+                  - generic [ref=e717]: Somnath_03.wav
+                  - generic [ref=e718]: 0:05s
+                - generic [ref=e721]:
+                  - generic [ref=e722]: Music
+                  - generic [ref=e723]: Tone
+                  - generic [ref=e724]: Impact
+      - generic [ref=e725]:
+        - textbox "Search Audio..." [ref=e731]
+        - generic [ref=e733]:
+          - button [active] [ref=e734]
+          - generic [ref=e744]: 5%

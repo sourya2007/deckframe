@@ -1,0 +1,19 @@
+appId: com.deckframe.app
+productName: DeckFrame
+directories:
+  output: release/
+files:
+  - dist/**/*
+  - dist-main/**/*
+  - package.json
+win:
+  target:
+    - nsis
+    - portable
+  icon: build/icon.ico
+  certificateFile: null
+  sign: null
+  signAndEditExecutable: false
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

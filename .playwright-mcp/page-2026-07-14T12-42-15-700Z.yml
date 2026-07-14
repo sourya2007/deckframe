@@ -1,0 +1,77 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - button "Select" [ref=e6]
+      - button "Move" [ref=e11]
+      - button "Cut" [ref=e18]
+      - button "Effects" [ref=e26]
+      - button "AI" [ref=e31]
+      - button "Library" [ref=e35]
+    - generic [ref=e40]:
+      - button "Export" [ref=e41]
+      - button "Settings" [ref=e46]
+  - generic [ref=e51]:
+    - generic [ref=e53]:
+      - generic [ref=e54]: DeckFrame
+      - generic [ref=e58]:
+        - generic [ref=e59] [cursor=pointer]: File
+        - generic [ref=e60] [cursor=pointer]: Edit
+        - generic [ref=e61] [cursor=pointer]: View
+        - generic [ref=e62] [cursor=pointer]: Window
+    - generic [ref=e751]:
+      - heading "Application Settings" [level=1] [ref=e752]
+      - generic [ref=e753]:
+        - heading "AI Configuration" [level=2] [ref=e754]
+        - generic [ref=e755]:
+          - generic [ref=e756]:
+            - generic [ref=e757]: Provider
+            - generic [ref=e758]:
+              - button "Claude" [ref=e759]
+              - button "OpenAI" [active] [ref=e760]
+              - button "Local" [ref=e761]
+          - generic [ref=e762]:
+            - generic [ref=e763]: API Key (Claude)
+            - textbox "sk-ant-..." [ref=e765]
+          - generic [ref=e771]:
+            - generic [ref=e772]: API Key (OpenAI)
+            - textbox "sk-..." [ref=e774]
+      - generic [ref=e780]:
+        - heading "Hotkey Mapping" [level=2] [ref=e781]
+        - generic [ref=e782]:
+          - generic [ref=e783]: Action
+          - generic [ref=e784]: Shortcut (Monospace)
+        - generic [ref=e785]:
+          - generic [ref=e786]:
+            - generic [ref=e787]: Record/Pause
+            - generic [ref=e788]: Ctrl + Shift + R
+          - generic [ref=e789]:
+            - generic [ref=e790]: Stop Recording
+            - generic [ref=e791]: Ctrl + Shift + S
+          - generic [ref=e792]:
+            - generic [ref=e793]: Add Marker
+            - generic [ref=e794]: M
+          - generic [ref=e795]:
+            - generic [ref=e796]: Split Clip
+            - generic [ref=e797]: S
+          - generic [ref=e798]:
+            - generic [ref=e799]: Toggle AI Analysis
+            - generic [ref=e800]: Ctrl + Alt + A
+          - generic [ref=e801]:
+            - generic [ref=e802]: Open Settings
+            - generic [ref=e803]: Ctrl + ,
+      - generic [ref=e804]:
+        - heading "Sound Asset Library Management" [level=2] [ref=e805]
+        - generic [ref=e806]:
+          - generic [ref=e807]:
+            - generic [ref=e808]: Default Path
+            - textbox [ref=e809]: C:\Users\User\Documents\DeckFrame\Sounds
+            - button "Browse" [ref=e810]
+          - generic [ref=e811]:
+            - checkbox "Auto-scan for new sounds" [checked] [ref=e812]
+            - text: Auto-scan for new sounds
+          - generic [ref=e813]:
+            - checkbox "Download community pack" [ref=e814]
+            - text: Download community pack
+      - generic [ref=e815]:
+        - button "Reset Defaults" [ref=e816]
+        - button "Save Settings" [ref=e817]

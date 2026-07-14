@@ -1,0 +1,31 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - button "Select" [ref=e6]
+      - button "Move" [ref=e11]
+      - button "Cut" [ref=e18]
+      - button "Effects" [ref=e26]
+      - button "AI" [ref=e31]
+      - button "Library" [ref=e35]
+    - generic [ref=e40]:
+      - button "Export" [ref=e41]
+      - button "Settings" [ref=e46]
+  - generic [ref=e51]:
+    - generic [ref=e53]:
+      - generic [ref=e54]: DeckFrame
+      - generic [ref=e58]:
+        - generic [ref=e59] [cursor=pointer]: File
+        - generic [ref=e60] [cursor=pointer]: Edit
+        - generic [ref=e61] [cursor=pointer]: View
+        - generic [ref=e62] [cursor=pointer]: Window
+    - generic [ref=e90]:
+      - generic [ref=e91]:
+        - textbox "Search effects, transitions, and motion graphics..." [ref=e96]: Zoom
+        - button [ref=e97]
+      - generic [ref=e101]:
+        - generic [ref=e102]: Transitions
+        - generic [ref=e105]:
+          - generic [ref=e113] [cursor=pointer]:
+            - generic [ref=e114]: Zoom In
+            - generic [ref=e338]: Add
+          - generic [ref=e115] [cursor=pointer]: Zoom Out
