@@ -4,11 +4,11 @@
     "module": "CommonJS",
     "moduleResolution": "node",
     "strict": true,
-    "composite": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "dist-main"
+    "outDir": "dist-main",
+    "rootDir": "main"
   },
   "include": ["main/**/*"]
 }
