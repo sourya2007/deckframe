@@ -1,12 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
-import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 
 if (ffmpegStatic) {
-  ffmpeg.setFfmpegPath(ffmpegStatic);
+  process.env.FFMPEG_PATH = ffmpegStatic;
 }
+const ffmpeg = require('fluent-ffmpeg') as any;
 
 let recordingIdCounter = 0;
 
@@ -25,7 +25,7 @@ export async function stopRecording(buffer: Uint8Array): Promise<{ videoPath: st
   fs.writeFileSync(webmPath, buffer);
 
   return new Promise((resolve, reject) => {
-    ffmpeg(webmPath)
+    new ffmpeg({ source: webmPath })
       .outputOptions([
         '-c:v libx264',
         '-preset fast',
@@ -38,7 +38,7 @@ export async function stopRecording(buffer: Uint8Array): Promise<{ videoPath: st
         try { fs.unlinkSync(webmPath); } catch { /* ok */ }
         resolve({ videoPath: mp4Path, eventsPath });
       })
-      .on('error', (err) => {
+      .on('error', (err: Error) => {
         try { fs.unlinkSync(webmPath); } catch { /* ok */ }
         reject(err);
       })
