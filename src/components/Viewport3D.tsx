@@ -12,20 +12,27 @@ interface Viewport3DProps {
   dofEnabled: boolean;
   playhead: number;
   activeEffect?: string | null;
+  // export window: reuse a video element owned by the caller (its audio feeds
+  // MediaRecorder), play at its own rate (freeRun), and expose the canvas
+  externalVideo?: HTMLVideoElement | null;
+  freeRun?: boolean;
+  onCanvas?: (canvas: HTMLCanvasElement) => void;
 }
 
-function VideoPlane({ url, playhead }: { url: string | null; playhead: number }) {
+function VideoPlane({ url, playhead, externalVideo, freeRun }: { url: string | null; playhead: number; externalVideo?: HTMLVideoElement | null; freeRun?: boolean }) {
   const meshRef = useRef<THREE.Mesh>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const textureRef = useRef<THREE.VideoTexture | null>(null);
 
   useEffect(() => {
-    if (!url) return;
-    const video = document.createElement('video');
-    video.src = url;
-    video.crossOrigin = 'Anonymous';
-    video.muted = true;
-    video.play();
+    if (!url && !externalVideo) return;
+    const video = externalVideo ?? document.createElement('video');
+    if (!externalVideo) {
+      video.src = url!;
+      video.crossOrigin = 'Anonymous';
+      video.muted = true;
+      video.play();
+    }
     videoRef.current = video;
 
     const texture = new THREE.VideoTexture(video);
@@ -34,24 +41,25 @@ function VideoPlane({ url, playhead }: { url: string | null; playhead: number })
     textureRef.current = texture;
 
     if (meshRef.current) {
-      (meshRef.current.material as THREE.MeshBasicMaterial).map = texture;
-      meshRef.current.material.needsUpdate = true;
+      const mat = meshRef.current.material as THREE.MeshBasicMaterial;
+      mat.map = texture;
+      mat.needsUpdate = true;
     }
 
     return () => {
-      video.pause();
+      if (!externalVideo) video.pause();
       texture.dispose();
     };
-  }, [url]);
+  }, [url, externalVideo]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !url) return;
+    if (!video || freeRun) return; // export window: video plays on its own clock
     const target = playhead / 1000;
     if (Math.abs(video.currentTime - target) > 0.3) {
       video.currentTime = target;
     }
-  }, [playhead, url]);
+  }, [playhead, url, freeRun]);
 
   return (
     <mesh ref={meshRef}>
@@ -87,9 +95,17 @@ function CameraRig({ transform }: { transform: CameraTransform }) {
   return null;
 }
 
-export function Viewport3D({ videoUrl, cameraTransform, isCinematic, dofEnabled, playhead, activeEffect }: Viewport3DProps) {
+export function Viewport3D({ videoUrl, cameraTransform, isCinematic, dofEnabled, playhead, activeEffect, externalVideo, freeRun, onCanvas }: Viewport3DProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!onCanvas) return;
+    const canvas = containerRef.current?.querySelector('canvas');
+    if (canvas) onCanvas(canvas);
+  }, [onCanvas]);
+
   return (
-    <div className="w-full h-full bg-neutral-950">
+    <div ref={containerRef} className="w-full h-full bg-neutral-950">
       <Canvas>
         {isCinematic ? (
           <PerspectiveCamera makeDefault position={[0, 0, 10]} fov={50} />
@@ -101,7 +117,7 @@ export function Viewport3D({ videoUrl, cameraTransform, isCinematic, dofEnabled,
         
         <ambientLight intensity={1} />
         
-        <VideoPlane url={videoUrl} playhead={playhead} />
+        <VideoPlane url={videoUrl} playhead={playhead} externalVideo={externalVideo} freeRun={freeRun} />
 
         {(isCinematic || activeEffect === 'Glitch' || activeEffect === 'ChromaticAberration') && (
           <EffectComposer>

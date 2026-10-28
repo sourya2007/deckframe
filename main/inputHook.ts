@@ -30,7 +30,7 @@ function mapButton(b: number): 'left' | 'right' | 'middle' {
   return 'middle';
 }
 
-export async function setupInputHook(startTick: bigint) {
+export async function setupInputHook(startTick: bigint, onEvent?: (ev: any) => void) {
   const hook = await ensureUiohook();
   if (!hook) return;
 
@@ -38,9 +38,20 @@ export async function setupInputHook(startTick: bigint) {
   events = [];
   isRecording = true;
 
-  hook.uIOhook.on('keydown', (e: any) => {
+  // Live telemetry stream (moves included) for the renderer; the events file
+  // keeps clicks/scroll/keys only — moves would bloat it for no editor benefit.
+  const emit = (ev: any) => {
     if (!isRecording) return;
-    events.push({
+    onEvent?.(ev);
+    if (ev.type !== 'move') events.push(ev);
+  };
+
+  hook.uIOhook.on('mousemove', (e: any) => {
+    emit({ timestamp: getRelativeTime(), type: 'move', coordinates: { x: e.x, y: e.y } });
+  });
+
+  hook.uIOhook.on('keydown', (e: any) => {
+    emit({
       timestamp: getRelativeTime(),
       type: 'keypress',
       details: { key: e.keycode, state: 'down' }
@@ -48,8 +59,7 @@ export async function setupInputHook(startTick: bigint) {
   });
 
   hook.uIOhook.on('keyup', (e: any) => {
-    if (!isRecording) return;
-    events.push({
+    emit({
       timestamp: getRelativeTime(),
       type: 'keypress',
       details: { key: e.keycode, state: 'up' }
@@ -57,8 +67,7 @@ export async function setupInputHook(startTick: bigint) {
   });
 
   hook.uIOhook.on('mousedown', (e: any) => {
-    if (!isRecording) return;
-    events.push({
+    emit({
       timestamp: getRelativeTime(),
       type: 'click',
       coordinates: { x: e.x, y: e.y },
@@ -67,8 +76,7 @@ export async function setupInputHook(startTick: bigint) {
   });
 
   hook.uIOhook.on('mouseup', (e: any) => {
-    if (!isRecording) return;
-    events.push({
+    emit({
       timestamp: getRelativeTime(),
       type: 'click',
       coordinates: { x: e.x, y: e.y },
@@ -77,8 +85,7 @@ export async function setupInputHook(startTick: bigint) {
   });
 
   hook.uIOhook.on('wheel', (e: any) => {
-    if (!isRecording) return;
-    events.push({
+    emit({
       timestamp: getRelativeTime(),
       type: 'scroll',
       coordinates: { x: e.x, y: e.y },

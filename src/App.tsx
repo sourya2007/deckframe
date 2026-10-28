@@ -11,8 +11,6 @@ import { EffectsView } from './components/EffectsView';
 import { AudioLibraryView } from './components/AudioLibraryView';
 import { ExportModal } from './components/ExportModal';
 import { EmptyStateView } from './components/EmptyStateView';
-import { SourceSelector } from './components/SourceSelector';
-import type { SourceInfo } from './components/SourceSelector';
 
 export default function App() {
   const [state, dispatch] = useProjectState();
@@ -23,12 +21,14 @@ export default function App() {
   const [duration, setDuration] = useState(10000); // 10s mock duration
   const [activeEffect, setActiveEffect] = useState<string | null>(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
-  const [showSourcePicker, setShowSourcePicker] = useState(false);
-  const [sources, setSources] = useState<SourceInfo[]>([]);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const micRecorderRef = useRef<MediaRecorder | null>(null);
+  const micChunksRef = useRef<Blob[]>([]);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const micPathRef = useRef<string | null>(null);
   
   const electronAPI = window.electronAPI;
 
@@ -85,16 +85,45 @@ export default function App() {
   const handleVideoImport = (file: File) => {
     const url = URL.createObjectURL(file);
     setPlayhead(0);
-    dispatch({ type: 'SET_VIDEO', payload: url });
+    dispatch({ type: 'SET_VIDEO', url });
   };
 
-  const startRecordingWithSource = async (sourceId: string) => {
+  const stopAllTracks = () => {
+    mediaStreamRef.current?.getTracks().forEach(t => t.stop());
+    mediaStreamRef.current = null;
+    micStreamRef.current?.getTracks().forEach(t => t.stop());
+    micStreamRef.current = null;
+  };
+
+  const stopRecordingFlow = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  const startRecordingWithSource = async () => {
     try {
+      // video + system audio come from the display-media handler in main,
+      // which auto-approves the source picked in the overlay
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: 30 },
-        audio: false,
+        audio: true,
       });
       mediaStreamRef.current = stream;
+
+      // mic is a separate sidecar track, re-mixed at export time
+      try {
+        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStreamRef.current = micStream;
+        const micChunks: Blob[] = [];
+        micChunksRef.current = micChunks;
+        const micRecorder = new MediaRecorder(micStream);
+        micRecorderRef.current = micRecorder;
+        micRecorder.ondataavailable = (e: BlobEvent) => { if (e.data.size > 0) micChunks.push(e.data); };
+        micRecorder.start(1000);
+      } catch {
+        console.warn('Microphone unavailable — recording without mic track');
+      }
 
       const chunks: Blob[] = [];
       recordedChunksRef.current = chunks;
@@ -110,12 +139,21 @@ export default function App() {
       };
 
       recorder.onstop = async () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        const buffer = await blob.arrayBuffer();
+        if (micRecorderRef.current && micRecorderRef.current.state !== 'inactive') {
+          micRecorderRef.current.stop();
+        }
+        // give the mic recorder a beat to flush its last chunk
+        await new Promise(r => setTimeout(r, 150));
+
+        const buffer = await new Blob(chunks, { type: 'video/webm' }).arrayBuffer();
+        const micBuffer = micChunksRef.current.length
+          ? await new Blob(micChunksRef.current, { type: 'audio/webm' }).arrayBuffer()
+          : undefined;
 
         try {
-          const result = await electronAPI!.stopRecording(buffer);
+          const result = await electronAPI!.stopRecording(buffer, micBuffer);
           dispatch({ type: 'SET_VIDEO', url: `file://${result.videoPath}` });
+          micPathRef.current = result.micPath ?? null;
 
           if (result.eventsPath) {
             try {
@@ -130,25 +168,19 @@ export default function App() {
           alert(`Recording failed: ${err.message}`);
         }
 
-        if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach(t => t.stop());
-          mediaStreamRef.current = null;
-        }
-
+        stopAllTracks();
         setRecordingSeconds(0);
         setIsRecording(false);
         mediaRecorderRef.current = null;
+        micRecorderRef.current = null;
         recordedChunksRef.current = [];
+        micChunksRef.current = [];
       };
 
-      stream.getVideoTracks()[0].onended = () => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-          mediaRecorderRef.current.stop();
-        }
-      };
+      stream.getVideoTracks()[0].onended = stopRecordingFlow;
 
       recorder.start(1000);
-      await electronAPI!.startRecording(sourceId);
+      await electronAPI!.startRecording('display-media');
       setRecordingSeconds(0);
       setIsRecording(true);
     } catch (err: any) {
@@ -158,10 +190,21 @@ export default function App() {
     }
   };
 
-  const handleSourceSelected = (sourceId: string) => {
-    setShowSourcePicker(false);
-    startRecordingWithSource(sourceId);
-  };
+  // capture flow: pick source (overlay) → countdown (overlay) → capture
+  useEffect(() => {
+    if (!electronAPI) return;
+    const unsubSel = electronAPI.onSourceSelected(async () => {
+      const result = await electronAPI!.beginCountdown();
+      if (result === 'started') await startRecordingWithSource();
+    });
+    const unsubHud = electronAPI.onHudControl(action => {
+      if (action === 'stop') stopRecordingFlow();
+      else if (action === 'pause') mediaRecorderRef.current?.pause();
+      else if (action === 'resume') mediaRecorderRef.current?.resume();
+    });
+    return () => { unsubSel(); unsubHud(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleRecord = async () => {
     if (!electronAPI) {
@@ -170,15 +213,11 @@ export default function App() {
     }
 
     if (isRecording) {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop();
-      }
+      stopRecordingFlow();
       return;
     }
 
-    const availableSources = await electronAPI.getSources();
-    setSources(availableSources);
-    setShowSourcePicker(true);
+    await electronAPI.showSourceSelector();
   };
 
   const handleEffectSelect = (name: string) => {
@@ -326,15 +365,7 @@ export default function App() {
         </div>
       </div>
 
-      {showExport && <ExportModal onClose={() => setShowExport(false)} videoPath={state.videoUrl?.startsWith('file://') ? state.videoUrl.slice(7) : null} events={state.events} duration={duration} />}
-
-      {showSourcePicker && (
-        <SourceSelector
-          sources={sources}
-          onSelect={handleSourceSelected}
-          onCancel={() => setShowSourcePicker(false)}
-        />
-      )}
+      {showExport && <ExportModal onClose={() => setShowExport(false)} videoPath={state.videoUrl?.startsWith('file://') ? state.videoUrl.slice(7) : null} micPath={micPathRef.current} events={state.events} duration={duration} scene={{cameraTransform: state.camera, isCinematic: state.isCinematic, dofEnabled: state.dofEnabled, activeEffect: null}} />}
     </div>
   );
 }

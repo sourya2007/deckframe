@@ -11,3 +11,4 @@ coverage/
 .claude/
 .playwright-mcp/
 *.tsbuildinfo
+Recordly-windows-x64.exe

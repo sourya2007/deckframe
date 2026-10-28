@@ -1,16 +1,45 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+function subscribe<T>(channel: string, cb: (payload: T) => void) {
+  const handler = (_: any, payload: T) => cb(payload);
+  ipcRenderer.on(channel, handler);
+  return () => ipcRenderer.removeListener(channel, handler);
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
-  getSources: () => ipcRenderer.invoke('get-sources'),
+  // recording
+  getSources: (thumbnails?: boolean) => ipcRenderer.invoke('get-sources', { thumbnails }),
   startRecording: (sourceId: string) => ipcRenderer.invoke('start-recording', sourceId),
-  stopRecording: (chunks: ArrayBuffer) => ipcRenderer.invoke('stop-recording', new Uint8Array(chunks)),
+  stopRecording: (chunks: ArrayBuffer, micChunks?: ArrayBuffer) =>
+    ipcRenderer.invoke('stop-recording', new Uint8Array(chunks), micChunks ? new Uint8Array(micChunks) : undefined),
   loadEvents: (filePath: string) => ipcRenderer.invoke('load-events', filePath),
-  exportVideo: (opts: any) => ipcRenderer.invoke('export-video', opts),
-  onExportProgress: (cb: (pct: number) => void) => {
-    const handler = (_: any, pct: number) => cb(pct);
-    ipcRenderer.on('export-progress', handler);
-    return () => ipcRenderer.removeListener('export-progress', handler);
-  },
+
+  // capture flow (main window)
+  showSourceSelector: () => ipcRenderer.invoke('show-source-selector'),
+  onSourceSelected: (cb: (sourceId: string) => void) => subscribe('source-selected', cb),
+  beginCountdown: () => ipcRenderer.invoke('begin-countdown'),
+  onHudControl: (cb: (action: 'stop' | 'pause' | 'resume') => void) => subscribe('hud-control', cb),
+  onCursorTelemetry: (cb: (ev: any) => void) => subscribe('cursor-telemetry', cb),
+
+  // overlay windows
+  sourcePicked: (sourceId: string) => ipcRenderer.invoke('source-picked', sourceId),
+  cancelSourceSelector: () => ipcRenderer.invoke('cancel-source-selector'),
+  cancelCountdown: () => ipcRenderer.send('countdown-cancel'),
+  onCountdownTick: (cb: (p: { remaining: number }) => void) => subscribe('countdown-tick', cb),
+  onHudTick: (cb: (p: { elapsedSeconds: number }) => void) => subscribe('hud-tick', cb),
+  hudControl: (action: string) => ipcRenderer.invoke('hud-control', action),
+  setHudPassthrough: (enabled: boolean) => ipcRenderer.invoke('hud-set-passthrough', enabled),
+
+  // export
+  exportOpen: (opts: any) => ipcRenderer.invoke('export-open', opts),
+  exportCancel: (reason?: string) => ipcRenderer.invoke('export-cancel', reason),
+  revealExportedFile: (filePath: string) => ipcRenderer.invoke('reveal-file', filePath),
+  exportStreamWrite: (bytes: Uint8Array) => ipcRenderer.send('export-stream-write', bytes),
+  exportStreamClose: () => ipcRenderer.send('export-stream-close'),
+  exportProgressReport: (pct: number) => ipcRenderer.send('export-progress-report', pct),
+  onExportProgress: (cb: (pct: number) => void) => subscribe('export-progress', cb),
+
+  // settings / misc
   saveSettings: (settings: any) => ipcRenderer.invoke('save-settings', settings),
   loadSettings: () => ipcRenderer.invoke('load-settings'),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),

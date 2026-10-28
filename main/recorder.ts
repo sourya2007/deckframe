@@ -2,15 +2,19 @@ import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
 import ffmpegStatic from 'ffmpeg-static';
+import ffprobeStatic from 'ffprobe-static';
 
 if (ffmpegStatic) {
   process.env.FFMPEG_PATH = ffmpegStatic;
+}
+if (ffprobeStatic?.path) {
+  process.env.FFPROBE_PATH = ffprobeStatic.path;
 }
 const ffmpeg = require('fluent-ffmpeg') as any;
 
 let recordingIdCounter = 0;
 
-export async function stopRecording(buffer: Uint8Array): Promise<{ videoPath: string, eventsPath: string }> {
+export async function stopRecording(buffer: Uint8Array, micBuffer?: Uint8Array): Promise<{ videoPath: string, eventsPath: string, micPath?: string }> {
   if (!buffer || buffer.length === 0) {
     throw new Error('Recording buffer is empty — no video data received.');
   }
@@ -24,6 +28,13 @@ export async function stopRecording(buffer: Uint8Array): Promise<{ videoPath: st
 
   fs.writeFileSync(webmPath, buffer);
 
+  // Mic is recorded as a separate sidecar track so it can be re-mixed at export
+  let micPath: string | undefined;
+  if (micBuffer && micBuffer.length > 0) {
+    micPath = path.join(userData, `recording-${ts}-${recId}.mic.webm`);
+    fs.writeFileSync(micPath, micBuffer);
+  }
+
   return new Promise((resolve, reject) => {
     new ffmpeg({ source: webmPath })
       .outputOptions([
@@ -36,7 +47,7 @@ export async function stopRecording(buffer: Uint8Array): Promise<{ videoPath: st
       .toFormat('mp4')
       .on('end', () => {
         try { fs.unlinkSync(webmPath); } catch { /* ok */ }
-        resolve({ videoPath: mp4Path, eventsPath });
+        resolve({ videoPath: mp4Path, eventsPath, micPath });
       })
       .on('error', (err: Error) => {
         try { fs.unlinkSync(webmPath); } catch { /* ok */ }
