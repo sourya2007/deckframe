@@ -1,6 +1,8 @@
 import { app, BrowserWindow, ipcMain, desktopCapturer, dialog, session, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import { spawn } from 'child_process';
+import ffmpegStatic from 'ffmpeg-static';
 import { setupInputHook, stopInputHook } from './inputHook';
 import { stopRecording } from './recorder';
 import { hideOsCursor, restoreOsCursor } from './cursorHider';
@@ -45,6 +47,10 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // shortcut: local recordings are file:// and must feed WebGL textures;
+      // the renderer only runs bundled code — switch to a custom media protocol
+      // if untrusted content ever enters the renderer
+      webSecurity: false,
     },
   });
 
@@ -179,7 +185,7 @@ ipcMain.handle('start-recording', async (_, sourceId: string) => {
   }
 });
 
-ipcMain.handle('stop-recording', async (_, chunks: Uint8Array, micChunks?: Uint8Array) => {
+ipcMain.handle('stop-recording', async (_, chunks: Uint8Array, micChunks?: Uint8Array, webcamChunks?: Uint8Array) => {
   if (!isRecordingActive) {
     throw new Error('No recording in progress.');
   }
@@ -188,9 +194,9 @@ ipcMain.handle('stop-recording', async (_, chunks: Uint8Array, micChunks?: Uint8
   closeOverlay('hud-overlay');
   const eventsPath = stopInputHook();
   try {
-    const result = await stopRecording(chunks, micChunks);
-    diag(`recording-stop video=${result.videoPath} mic=${result.micPath ?? 'none'}`);
-    return { videoPath: result.videoPath, eventsPath: eventsPath || result.eventsPath, micPath: result.micPath };
+    const result = await stopRecording(chunks, micChunks, webcamChunks);
+    diag(`recording-stop video=${result.videoPath} mic=${result.micPath ?? 'none'} webcam=${result.webcamPath ?? 'none'}`);
+    return { videoPath: result.videoPath, eventsPath: eventsPath || result.eventsPath, micPath: result.micPath, webcamPath: result.webcamPath };
   } catch (err) {
     console.error('FFmpeg conversion failed:', err);
     diag(`recording-stop-error ${err}`);
@@ -207,6 +213,76 @@ ipcMain.handle('load-events', async (_, filePath: string) => {
   } catch (err) {
     console.error('Failed to load events file:', err);
     throw new Error('Could not load events file.');
+  }
+});
+
+// ---- .deckframe projects ----
+
+ipcMain.handle('save-project', async (_e, projectJson: string) => {
+  const result = await dialog.showSaveDialog(mainWindow!, {
+    defaultPath: 'untitled.deckframe',
+    filters: [{ name: 'DeckFrame Project', extensions: ['deckframe'] }],
+  });
+  if (result.canceled || !result.filePath) return null;
+  fs.writeFileSync(result.filePath, projectJson);
+  diag(`project-save ${result.filePath}`);
+  return result.filePath;
+});
+
+ipcMain.handle('open-project', async () => {
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    filters: [{ name: 'DeckFrame Project', extensions: ['deckframe'] }],
+    properties: ['openFile'],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  const filePath = result.filePaths[0];
+  try {
+    const data = fs.readFileSync(filePath, 'utf-8');
+    diag(`project-open ${filePath}`);
+    return { filePath, project: JSON.parse(data) };
+  } catch (err) {
+    console.error('Failed to open project:', err);
+    throw new Error('Could not open project file.');
+  }
+});
+
+// ---- captions (whisper via OpenAI key from settings) ----
+// shortcut: hosted whisper-1 instead of a local whisper.cpp binary — no model
+// download, but needs network + key; whole-file upload also caps at 25MB
+// (~13 min of 16k mono wav) — chunk longer audio when offline/long-form matters
+
+ipcMain.handle('transcribe-audio', async (_e, audioPath: string) => {
+  const key = userSettings().openaiKey as string | undefined;
+  if (!key) throw new Error('No OpenAI API key set in Settings — needed for transcription.');
+  if (!audioPath || !fs.existsSync(audioPath)) throw new Error('Audio file not found.');
+
+  const wavPath = path.join(app.getPath('userData'), `transcribe-${Date.now()}.wav`);
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn(ffmpegStatic ?? 'ffmpeg', ['-y', '-i', audioPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath]);
+    proc.on('error', reject);
+    proc.on('close', (c: number | null) => c === 0 ? resolve() : reject(new Error('ffmpeg audio extract failed')));
+  });
+
+  try {
+    const form = new FormData();
+    form.append('file', new Blob([fs.readFileSync(wavPath)], { type: 'audio/wav' }), 'audio.wav');
+    form.append('model', 'whisper-1');
+    form.append('response_format', 'verbose_json');
+    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}` },
+      body: form,
+    });
+    if (!res.ok) throw new Error(`Transcription API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const json = await res.json() as { segments?: Array<{ start: number; end: number; text: string }> };
+    return (json.segments ?? []).map((s, i) => ({
+      id: `cap-${i}-${Math.round(s.start * 1000)}`,
+      start: Math.round(s.start * 1000),
+      end: Math.round(s.end * 1000),
+      text: s.text.trim(),
+    }));
+  } finally {
+    try { fs.unlinkSync(wavPath); } catch { /* ok */ }
   }
 });
 
@@ -272,6 +348,7 @@ ipcMain.handle('export-open', async (_e, opts: any) => {
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
+      webSecurity: false, // file:// recording → WebGL canvas, same as the editor
     },
   });
   exportWindow.webContents.setBackgroundThrottling(false);
@@ -280,10 +357,15 @@ ipcMain.handle('export-open', async (_e, opts: any) => {
     if (!exportCancelled) failExport(new Error(`Export renderer crashed: ${details.reason}`));
   });
 
+  // scene (incl. events) goes in a temp file — URL length caps (~2MB) can't
+  // hold a long recording's move telemetry
+  cleanupSceneFile();
+  exportSceneFile = path.join(app.getPath('userData'), `export-scene-${Date.now()}.json`);
+  fs.writeFileSync(exportSceneFile, JSON.stringify(opts.scene ?? {}));
   const qs = new URLSearchParams({
     windowType: 'export',
     videoUrl: `file:///${String(videoPath).replace(/\\/g, '/')}`,
-    scene: JSON.stringify(opts.scene ?? {}),
+    sceneFile: exportSceneFile,
   }).toString();
   const loaded = (process.env.NODE_ENV === 'development' || !app.isPackaged)
     ? exportWindow.loadURL(`http://localhost:5173/?${qs}`)
@@ -312,9 +394,21 @@ function failExport(err: Error) {
   if (exportWindow && !exportWindow.isDestroyed()) { exportWindow.destroy(); }
   exportWindow = null;
   if (exportTempWebm) { try { fs.unlinkSync(exportTempWebm); } catch { /* ok */ } exportTempWebm = null; }
+  cleanupSceneFile();
   exportReject?.(err);
   exportResolve = null; exportReject = null;
 }
+
+let exportSceneFile: string | null = null;
+function cleanupSceneFile() {
+  if (exportSceneFile) { try { fs.unlinkSync(exportSceneFile); } catch { /* ok */ } exportSceneFile = null; }
+}
+
+// export window fetches its scene through IPC — file:// fetch is blocked in renderers
+ipcMain.handle('get-export-scene', async () => {
+  if (!exportSceneFile) throw new Error('No export scene available.');
+  return fs.readFileSync(exportSceneFile, 'utf-8');
+});
 
 ipcMain.on('export-stream-close', async () => {
   const ws = exportWriteStream; exportWriteStream = null;
@@ -334,9 +428,10 @@ ipcMain.on('export-stream-close', async () => {
       gifFps: exportOpts.gifFps,
       gifWidth: exportOpts.gifWidth,
       gifLoopForever: exportOpts.gifLoopForever,
-      onProgress: pct => mainWindow?.webContents.send('export-progress', 85 + Math.round(pct * 14)),
+      onProgress: pct => mainWindow?.webContents.send('export-progress', Math.min(99, 85 + Math.round(pct * 14))),
     }, exportDurationMs);
     if (exportTempWebm) { try { fs.unlinkSync(exportTempWebm); } catch { /* ok */ } exportTempWebm = null; }
+    cleanupSceneFile();
     mainWindow?.webContents.send('export-progress', 100);
     diag(`export-complete ${outFile}`);
     const resolve = exportResolve;

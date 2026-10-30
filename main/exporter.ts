@@ -81,6 +81,8 @@ export async function encodeExport(opts: EncodeOpts, durationMs: number): Promis
   // mic sidecar: mix with the source audio (labeled + mapped — an unmapped
   // filter output makes ffmpeg bail with "unconnected output")
   const hasMic = !!opts.micPath;
+  // shortcut: mic sidecar is mixed at 1x — speed regions desync mic audio;
+  // add an atempo chain driven by speedAt when speed editing matters
   const mixArgs = hasMic
     ? ['-i', opts.micPath!, '-filter_complex', '[0:a][1:a]amix=inputs=2:duration=first[a]', '-map', '0:v', '-map', '[a]']
     : ['-map', '0:v', '-map', '0:a?'];

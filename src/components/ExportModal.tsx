@@ -7,12 +7,7 @@ interface ExportModalProps {
   events: any[];
   duration: number;
   // live editor scene state, replayed by the hidden export window
-  scene: {
-    cameraTransform: any;
-    isCinematic: boolean;
-    dofEnabled: boolean;
-    activeEffect: string | null;
-  };
+  scene: Record<string, any>;
 }
 
 export function ExportModal({ onClose, videoPath, micPath, events, duration, scene }: ExportModalProps) {

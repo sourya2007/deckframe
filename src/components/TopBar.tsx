@@ -1,4 +1,4 @@
-export function TopBar() {
+export function TopBar({ onSave, onOpen }: { onSave?: () => void; onOpen?: () => void }) {
   return (
     <div className="h-10 border-b border-neutral-800/80 flex items-center px-4 justify-between bg-[#131316] z-10 shrink-0 text-xs">
        <div className="flex items-center gap-6">
@@ -7,8 +7,8 @@ export function TopBar() {
            <span className="text-sm">DeckFrame</span>
          </div>
          <div className="flex gap-4 text-neutral-400 font-medium ml-4">
-           <span className="hover:text-white cursor-pointer">File</span>
-           <span className="hover:text-white cursor-pointer">Edit</span>
+           <button onClick={onOpen} className="hover:text-white cursor-pointer">Open</button>
+           <button onClick={onSave} className="hover:text-white cursor-pointer">Save</button>
            <span className="hover:text-white cursor-pointer">View</span>
            <span className="hover:text-white cursor-pointer">Window</span>
          </div>

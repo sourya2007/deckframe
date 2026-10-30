@@ -2,6 +2,7 @@ export interface RecordingResult {
   videoPath: string;
   eventsPath: string;
   micPath?: string;
+  webcamPath?: string;
 }
 
 export interface SourceInfo {
@@ -10,11 +11,23 @@ export interface SourceInfo {
   thumbnail?: string;
 }
 
+export interface CaptionCue {
+  id: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface LoadedProject {
+  filePath: string;
+  project: any;   // ProjectState JSON — shape validated by the renderer
+}
+
 export interface ElectronAPI {
   // recording
   getSources: (thumbnails?: boolean) => Promise<SourceInfo[]>;
   startRecording: (sourceId: string) => Promise<string>;
-  stopRecording: (chunks: ArrayBuffer, micChunks?: ArrayBuffer) => Promise<RecordingResult>;
+  stopRecording: (chunks: ArrayBuffer, micChunks?: ArrayBuffer, webcamChunks?: ArrayBuffer) => Promise<RecordingResult>;
   loadEvents: (path: string) => Promise<string>;
 
   // capture flow (main window)
@@ -37,10 +50,19 @@ export interface ElectronAPI {
   exportOpen: (opts: any) => Promise<{ outPath: string }>;
   exportCancel: (reason?: string) => Promise<void>;
   revealExportedFile: (filePath: string) => Promise<void>;
+  getExportScene: () => Promise<string>;
   exportStreamWrite: (bytes: Uint8Array) => void;
   exportStreamClose: () => void;
   exportProgressReport: (pct: number) => void;
   onExportProgress: (cb: (pct: number) => void) => () => void;
+
+  // projects
+  saveProject: (projectJson: string) => Promise<string | null>;
+  openProject: () => Promise<LoadedProject | null>;
+  filePathForFile: (file: File) => string;
+
+  // captions
+  transcribeAudio: (audioPath: string) => Promise<CaptionCue[]>;
 
   // settings / misc
   saveSettings: (settings: any) => Promise<boolean>;

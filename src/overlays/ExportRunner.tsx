@@ -1,29 +1,57 @@
-import {useEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {Viewport3D} from '../components/Viewport3D';
-import type {CameraTransform} from '../types/project';
+import {speedAt} from '../lib/timeline';
+import type {
+  CameraTransform, InteractionEvent, ZoomRegion, SpeedRegion, Annotation, Caption, FrameStyle, WebcamStyle,
+} from '../types/project';
 
 // Hidden export window: plays the recording through the shared 3D scene,
 // captures the canvas + source audio, and streams webm chunks to main.
 
 const params = new URLSearchParams(window.location.search);
 const videoUrl = params.get('videoUrl');
-const scene = JSON.parse(params.get('scene') || '{}') as {
+const sceneFile = params.get('sceneFile');
+
+interface ExportScene {
   cameraTransform?: CameraTransform;
   isCinematic?: boolean;
   dofEnabled?: boolean;
   activeEffect?: string | null;
-};
+  events?: InteractionEvent[];
+  displaySize?: { width: number; height: number } | null;
+  trim?: { start: number; end: number };
+  zoomRegions?: ZoomRegion[];
+  speedRegions?: SpeedRegion[];
+  annotations?: Annotation[];
+  captions?: Caption[];
+  frame?: FrameStyle;
+  webcam?: WebcamStyle;
+  webcamPath?: string | null;
+}
+
+const toFileUrl = (p: string) => 'file:///' + p.replace(/\\/g, '/');
 
 export function ExportRunner() {
+  const [scene, setScene] = useState<ExportScene | null>(null);
   const [video] = useState(() => {
     const v = document.createElement('video');
-    if (videoUrl) { v.src = videoUrl; v.crossOrigin = 'Anonymous'; }
+    if (videoUrl) { v.src = videoUrl; }
     return v;
   });
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const startedRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  // overlays (cursor/captions/annotations) render from playhead — drive it from
+  // the export video's clock at capture rate, or they freeze at t=0
+  const [playhead, setPlayhead] = useState(0);
   const api = window.electronAPI!;
+
+  useEffect(() => {
+    const id = setInterval(() => setPlayhead(video.currentTime * 1000), 33);
+    return () => clearInterval(id);
+  }, [video]);
+
+  const onCanvas = useCallback((c: HTMLCanvasElement) => { canvasRef.current = c; }, []);
 
   useEffect(() => {
     // StrictMode double-mount guard: one capture session per window
@@ -41,16 +69,24 @@ export function ExportRunner() {
         }
         if (!video.duration) throw new Error('Could not load recording');
 
+        const loaded: ExportScene = sceneFile ? JSON.parse(await api.getExportScene()) : {};
+        setScene(loaded);
+
+        // canvas mounts only after the scene state renders — poll instead of guessing a delay
+        const canvas = await new Promise<HTMLCanvasElement>((resolve, reject) => {
+          const t0 = Date.now();
+          const timer = setInterval(() => {
+            if (canvasRef.current) { clearInterval(timer); resolve(canvasRef.current); }
+            else if (Date.now() - t0 > 5000) { clearInterval(timer); reject(new Error('Scene canvas never mounted')); }
+          }, 50);
+        });
+
         const audioCtx = new AudioContext();
+        await audioCtx.resume();
         const source = audioCtx.createMediaElementSource(video);
         const dest = audioCtx.createMediaStreamDestination();
         // connect to the stream only — don't monitor through speakers
         source.connect(dest);
-
-        // wait for the R3F canvas to mount
-        await new Promise(r => setTimeout(r, 300));
-        const canvas = canvasRef.current;
-        if (!canvas) throw new Error('Scene canvas never mounted');
 
         const canvasStream = canvas.captureStream(30);
         for (const track of dest.stream.getAudioTracks()) canvasStream.addTrack(track);
@@ -67,9 +103,31 @@ export function ExportRunner() {
           }
         };
 
-        const duration = (video.duration || 1) * 1000;
+        const sourceMs = video.duration * 1000;
+        const trim = loaded.trim ?? {start: 0, end: 0};
+        const startMs = Math.max(0, Math.min(trim.start, sourceMs - 500));
+        const endMs = trim.end > 0 ? Math.min(trim.end, sourceMs) : sourceMs;
+        const span = Math.max(1, endMs - startMs);
+
+        if (startMs > 0) {
+          await new Promise<void>(resolve => {
+            video.onseeked = () => resolve();
+            video.currentTime = startMs / 1000;
+          });
+        }
+        video.playbackRate = speedAt(loaded.speedRegions ?? [], startMs);
+
+        const stopPlayback = () => {
+          video.pause();
+          if (recorder.state !== 'inactive') recorder.stop();
+        };
+
         const progressTimer = setInterval(() => {
-          api.exportProgressReport(Math.min(1, video.currentTime * 1000 / duration));
+          const t = video.currentTime * 1000;
+          // speed regions re-time the source; 250ms granularity is plenty for 0.25-4x
+          video.playbackRate = speedAt(loaded.speedRegions ?? [], t);
+          api.exportProgressReport(Math.min(1, Math.max(0, (t - startMs) / span)));
+          if (t >= endMs - 30) stopPlayback();
         }, 250);
 
         recorder.onstop = async () => {
@@ -78,9 +136,7 @@ export function ExportRunner() {
           api.exportStreamClose();
         };
 
-        video.onended = () => {
-          if (recorder.state !== 'inactive') recorder.stop();
-        };
+        video.onended = stopPlayback;
 
         // recorder first, playback second — otherwise the opening frames are lost
         recorder.start(1000);
@@ -101,18 +157,30 @@ export function ExportRunner() {
     return <div className="w-full h-full flex items-center justify-center text-red-400 text-sm">{error}</div>;
   }
 
+  if (!scene) {
+    return <div className="w-full h-full bg-black" />;
+  }
+
   return (
     <div className="w-full h-full bg-black">
       <Viewport3D
         videoUrl={null}
         externalVideo={video}
         freeRun
-        onCanvas={c => { canvasRef.current = c; }}
-        cameraTransform={scene.cameraTransform ?? {position: [0, 0, 10], rotation: [0, 0, 0], zoom: 50} as CameraTransform}
+        onCanvas={onCanvas}
+        cameraTransform={scene.cameraTransform ?? {position: [0, 0, 10], rotation: [0, 0, 0], scale: [1, 1, 1], zoom: 1} as CameraTransform}
         isCinematic={scene.isCinematic ?? false}
         dofEnabled={scene.dofEnabled ?? false}
-        playhead={0}
+        playhead={playhead}
         activeEffect={scene.activeEffect ?? null}
+        events={scene.events ?? []}
+        displaySize={scene.displaySize ?? null}
+        frame={scene.frame}
+        annotations={scene.annotations ?? []}
+        captions={scene.captions ?? []}
+        webcamUrl={scene.webcamPath ? toFileUrl(scene.webcamPath) : null}
+        webcam={scene.webcam}
+        zoomRegions={scene.zoomRegions ?? []}
       />
     </div>
   );

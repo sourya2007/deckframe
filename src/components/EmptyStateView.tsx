@@ -6,9 +6,11 @@ interface EmptyStateViewProps {
   isRecording: boolean;
   onVideoImport?: (file: File) => void;
   recordingTimer?: string;
+  webcamEnabled?: boolean;
+  onToggleWebcam?: (enabled: boolean) => void;
 }
 
-export function EmptyStateView({ onRecord, isRecording, onVideoImport, recordingTimer }: EmptyStateViewProps) {
+export function EmptyStateView({ onRecord, isRecording, onVideoImport, recordingTimer, webcamEnabled, onToggleWebcam }: EmptyStateViewProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -117,6 +119,15 @@ export function EmptyStateView({ onRecord, isRecording, onVideoImport, recording
           >
             Start Recording
           </button>
+
+          <label className="flex items-center gap-2 text-neutral-400 text-sm -mt-2">
+            <input
+              type="checkbox"
+              checked={!!webcamEnabled}
+              onChange={e => onToggleWebcam?.(e.target.checked)}
+            />
+            Include webcam bubble
+          </label>
           
           <div
             onDragOver={handleDragOver}

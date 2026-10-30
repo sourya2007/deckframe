@@ -14,7 +14,7 @@ const ffmpeg = require('fluent-ffmpeg') as any;
 
 let recordingIdCounter = 0;
 
-export async function stopRecording(buffer: Uint8Array, micBuffer?: Uint8Array): Promise<{ videoPath: string, eventsPath: string, micPath?: string }> {
+export async function stopRecording(buffer: Uint8Array, micBuffer?: Uint8Array, webcamBuffer?: Uint8Array): Promise<{ videoPath: string, eventsPath: string, micPath?: string, webcamPath?: string }> {
   if (!buffer || buffer.length === 0) {
     throw new Error('Recording buffer is empty — no video data received.');
   }
@@ -35,6 +35,13 @@ export async function stopRecording(buffer: Uint8Array, micBuffer?: Uint8Array):
     fs.writeFileSync(micPath, micBuffer);
   }
 
+  // Webcam sidecar — rendered as the PIP bubble in the editor and burned in at export
+  let webcamPath: string | undefined;
+  if (webcamBuffer && webcamBuffer.length > 0) {
+    webcamPath = path.join(userData, `recording-${ts}-${recId}.webcam.webm`);
+    fs.writeFileSync(webcamPath, webcamBuffer);
+  }
+
   return new Promise((resolve, reject) => {
     new ffmpeg({ source: webmPath })
       .outputOptions([
@@ -47,7 +54,7 @@ export async function stopRecording(buffer: Uint8Array, micBuffer?: Uint8Array):
       .toFormat('mp4')
       .on('end', () => {
         try { fs.unlinkSync(webmPath); } catch { /* ok */ }
-        resolve({ videoPath: mp4Path, eventsPath, micPath });
+        resolve({ videoPath: mp4Path, eventsPath, micPath, webcamPath });
       })
       .on('error', (err: Error) => {
         try { fs.unlinkSync(webmPath); } catch { /* ok */ }

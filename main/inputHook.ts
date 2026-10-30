@@ -1,11 +1,12 @@
 import fs from 'fs';
 import path from 'path';
-import { app } from 'electron';
+import { app, screen } from 'electron';
 
 let startTime: bigint | null = null;
 let events: any[] = [];
 let isRecording = false;
 let uiohook: any = null;
+let lastMoveAt = 0;
 
 async function ensureUiohook() {
   if (uiohook) return uiohook;
@@ -36,18 +37,22 @@ export async function setupInputHook(startTick: bigint, onEvent?: (ev: any) => v
 
   startTime = startTick;
   events = [];
+  lastMoveAt = 0;
   isRecording = true;
 
-  // Live telemetry stream (moves included) for the renderer; the events file
-  // keeps clicks/scroll/keys only — moves would bloat it for no editor benefit.
   const emit = (ev: any) => {
     if (!isRecording) return;
     onEvent?.(ev);
-    if (ev.type !== 'move') events.push(ev);
+    events.push(ev);
   };
 
+  // moves go in the file too (cursor overlay + auto-zoom need the path),
+  // throttled to ~20/s — raw rate would bloat the file for no visual gain
   hook.uIOhook.on('mousemove', (e: any) => {
-    emit({ timestamp: getRelativeTime(), type: 'move', coordinates: { x: e.x, y: e.y } });
+    const ts = getRelativeTime();
+    if (ts - lastMoveAt < 50) return;
+    lastMoveAt = ts;
+    emit({ timestamp: ts, type: 'move', coordinates: { x: e.x, y: e.y }, details: {} });
   });
 
   hook.uIOhook.on('keydown', (e: any) => {
@@ -106,8 +111,15 @@ export function stopInputHook(): string | null {
   try { uiohook?.uIOhook.stop(); } catch { /* ok */ }
   const ts = Date.now();
   const outputPath = path.join(app.getPath('userData'), `events-${ts}.json`);
+  // shortcut: coordinates map through the primary display only — window or
+  // secondary-display captures overlay the cursor approximately
+  const display = screen.getPrimaryDisplay();
   try {
-    fs.writeFileSync(outputPath, JSON.stringify(events, null, 2));
+    fs.writeFileSync(outputPath, JSON.stringify({
+      version: 1,
+      display: { width: display.size.width, height: display.size.height, x: display.bounds.x, y: display.bounds.y },
+      events,
+    }));
   } catch (err) {
     console.error('Failed to write events file:', err);
     return null;

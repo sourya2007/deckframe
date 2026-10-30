@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { InteractionEvent } from '../types/project';
 
 function disposeNodes(osc: OscillatorNode, gain: GainNode) {
@@ -69,6 +69,8 @@ function playProceduralSound(ctx: AudioContext, type: string, isDown: boolean) {
 export function useAudioEngine(events: InteractionEvent[], playhead: number) {
   const playedKeys = useRef<Set<string>>(new Set());
   const synthRef = useRef<AudioContext | null>(null);
+  // move telemetry is 20/s — never a sound, and filtering once keeps the loop cheap
+  const actionable = useMemo(() => events.filter(e => e.type !== 'move'), [events]);
 
   useEffect(() => {
     synthRef.current = new AudioContext();
@@ -81,7 +83,7 @@ export function useAudioEngine(events: InteractionEvent[], playhead: number) {
     if (!synthRef.current) return;
     const ctx = synthRef.current;
 
-    events.forEach((e, i) => {
+    actionable.forEach((e, i) => {
       const key = `${i}-${e.timestamp}-${e.type}`;
       if (e.timestamp <= playhead && !playedKeys.current.has(key)) {
         playedKeys.current.add(key);
@@ -92,7 +94,7 @@ export function useAudioEngine(events: InteractionEvent[], playhead: number) {
     if (playhead === 0) {
       playedKeys.current.clear();
     }
-  }, [playhead, events]);
+  }, [playhead, actionable]);
 
   return {};
 }

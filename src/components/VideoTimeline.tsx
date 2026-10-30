@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react';
-import { InteractionEvent, SoundEffect, CameraTransform } from '../types/project';
+import { InteractionEvent, SoundEffect, CameraTransform, TrimState, ZoomRegion, SpeedRegion, Annotation, Caption } from '../types/project';
+import { speedAt, toNormalized } from '../lib/timeline';
+import type { DisplayInfo } from '../lib/timeline';
 
 interface VideoTimelineProps {
   duration: number;
@@ -10,6 +12,20 @@ interface VideoTimelineProps {
   onSeek: (time: number) => void;
   onSoundEffectMove?: (id: string, newTimestamp: number) => void;
   onRemoveSoundEffect?: (id: string) => void;
+  // phase 3
+  trim: TrimState;
+  onTrimChange?: (trim: TrimState) => void;
+  zoomRegions: ZoomRegion[];
+  onZoomRegionsChange?: (regions: ZoomRegion[]) => void;
+  speedRegions: SpeedRegion[];
+  onSpeedRegionsChange?: (regions: SpeedRegion[]) => void;
+  annotations: Annotation[];
+  onAnnotationsChange?: (annotations: Annotation[]) => void;
+  captions: Caption[];
+  onCaptionsChange?: (captions: Caption[]) => void;
+  onAutoZoom?: () => void;
+  onTranscribe?: () => void;
+  displaySize?: DisplayInfo | null;
 }
 
 function formatTime(ms: number): string {
@@ -31,18 +47,63 @@ function getRulerTicks(duration: number): number[] {
   return ticks;
 }
 
-function seekFromEvent(e: React.MouseEvent, container: HTMLElement, duration: number, onSeek: (t: number) => void) {
-  const rect = container.getBoundingClientRect();
-  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left - 16) / (rect.width - 32)));
-  onSeek(ratio * duration);
-}
+type Selection =
+  | { kind: 'zoom' | 'speed' | 'annotation' | 'caption'; id: string }
+  | null;
 
-export function VideoTimeline({ duration, events, soundEffects, camera, playhead, onSeek, onSoundEffectMove, onRemoveSoundEffect }: VideoTimelineProps) {
+export function VideoTimeline({
+  duration, events, soundEffects, camera, playhead, onSeek,
+  onSoundEffectMove, onRemoveSoundEffect,
+  trim, onTrimChange, zoomRegions, onZoomRegionsChange,
+  speedRegions, onSpeedRegionsChange, annotations, onAnnotationsChange,
+  captions, onCaptionsChange, onAutoZoom, onTranscribe, displaySize,
+}: VideoTimelineProps) {
   const tracksRef = useRef<HTMLDivElement>(null);
   const draggingIdRef = useRef<string | null>(null);
   const [dragTimestamp, setDragTimestamp] = useState<number | null>(null);
+  const [selection, setSelection] = useState<Selection>(null);
   const rulerTicks = getRulerTicks(duration);
   const playheadPct = duration > 0 ? (playhead / duration) * 100 : 0;
+  const currentSpeed = speedAt(speedRegions, playhead);
+
+  const timeFromMouse = (e: MouseEvent | React.MouseEvent): number => {
+    if (!tracksRef.current) return 0;
+    const rect = tracksRef.current.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    return ratio * duration;
+  };
+
+  // one drag system for every region type: grab body to move, edges to resize
+  const startRegionDrag = (
+    e: React.MouseEvent,
+    region: { id: string; start: number; end: number },
+    mode: 'move' | 'l' | 'r',
+    commit: (start: number, end: number) => void,
+  ) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const t0 = timeFromMouse(e);
+    const orig = { start: region.start, end: region.end };
+
+    const move = (ev: MouseEvent) => {
+      const dt = timeFromMouse(ev) - t0;
+      if (mode === 'move') {
+        const dur = orig.end - orig.start;
+        const s = Math.max(0, Math.min(duration - dur, orig.start + dt));
+        commit(s, s + dur);
+      } else if (mode === 'l') {
+        commit(Math.max(0, Math.min(orig.end - 300, orig.start + dt)), orig.end);
+      } else {
+        commit(orig.start, Math.min(duration, Math.max(orig.start + 300, orig.end + dt)));
+      }
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  };
 
   const handleSfxMouseDown = (e: React.MouseEvent, sfx: SoundEffect) => {
     e.stopPropagation();
@@ -50,27 +111,16 @@ export function VideoTimeline({ duration, events, soundEffects, camera, playhead
     draggingIdRef.current = sfx.id;
     setDragTimestamp(sfx.timestamp);
 
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!tracksRef.current) return;
-      const rect = tracksRef.current.getBoundingClientRect();
-      const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left - 16) / (rect.width - 32)));
-      setDragTimestamp(ratio * duration);
-    };
-
-    const handleMouseUp = (e: MouseEvent) => {
+    const handleMouseMove = (ev: MouseEvent) => setDragTimestamp(timeFromMouse(ev));
+    const handleMouseUp = (ev: MouseEvent) => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
       const id = draggingIdRef.current;
       draggingIdRef.current = null;
       setDragTimestamp(null);
-      if (id && onSoundEffectMove && tracksRef.current) {
-        const rect = tracksRef.current.getBoundingClientRect();
-        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left - 16) / (rect.width - 32)));
-        const newTs = ratio * duration;
-        const originalTs = soundEffects.find(s => s.id === id)?.timestamp;
-        if (originalTs !== undefined && Math.abs(newTs - originalTs) > 50) {
-          onSoundEffectMove(id, newTs);
-        }
+      if (id && onSoundEffectMove) {
+        const newTs = timeFromMouse(ev);
+        if (Math.abs(newTs - sfx.timestamp) > 50) onSoundEffectMove(id, newTs);
       }
     };
 
@@ -78,63 +128,105 @@ export function VideoTimeline({ duration, events, soundEffects, camera, playhead
     document.addEventListener('mouseup', handleMouseUp);
   };
 
+  const startTrimDrag = (edge: 'start' | 'end') => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const move = (ev: MouseEvent) => {
+      const t = timeFromMouse(ev);
+      if (edge === 'start') onTrimChange?.({ start: Math.max(0, Math.min(trim.end - 500, t)), end: trim.end });
+      else onTrimChange?.({ start: trim.start, end: Math.min(duration, Math.max(trim.start + 500, t)) });
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  };
+
+  const selected = (() => {
+    if (!selection) return null;
+    if (selection.kind === 'zoom') return zoomRegions.find(r => r.id === selection.id) ?? null;
+    if (selection.kind === 'speed') return speedRegions.find(r => r.id === selection.id) ?? null;
+    if (selection.kind === 'annotation') return annotations.find(a => a.id === selection.id) ?? null;
+    return captions.find(c => c.id === selection.id) ?? null;
+  })();
+
+  const deleteSelected = () => {
+    if (!selection) return;
+    const { kind, id } = selection;
+    if (kind === 'zoom') onZoomRegionsChange?.(zoomRegions.filter(r => r.id !== id));
+    else if (kind === 'speed') onSpeedRegionsChange?.(speedRegions.filter(r => r.id !== id));
+    else if (kind === 'annotation') onAnnotationsChange?.(annotations.filter(a => a.id !== id));
+    else onCaptionsChange?.(captions.filter(c => c.id !== id));
+    setSelection(null);
+  };
+
+  // shared bar renderer for range-type regions
+  const regionBar = (
+    region: { id: string; start: number; end: number },
+    color: string,
+    label: string,
+    kind: 'zoom' | 'speed' | 'annotation' | 'caption',
+    commit: (start: number, end: number) => void,
+  ) => (
+    <div
+      key={region.id}
+      className={`absolute top-1/2 -translate-y-1/2 h-5 rounded border cursor-grab select-none text-[9px] flex items-center overflow-hidden ${color} ${selection?.id === region.id ? 'ring-1 ring-white' : ''}`}
+      style={{
+        left: `${duration > 0 ? (region.start / duration) * 100 : 0}%`,
+        width: `${duration > 0 ? ((region.end - region.start) / duration) * 100 : 0}%`,
+      }}
+      onMouseDown={(e) => { setSelection({ kind, id: region.id }); startRegionDrag(e, region, 'move', commit); }}
+      onDoubleClick={(e) => { e.stopPropagation(); commit(region.start, region.end); /* no-op keeps signature */ setSelection({ kind, id: region.id }); }}
+    >
+      <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize hover:bg-white/30" onMouseDown={(e) => startRegionDrag(e, region, 'l', commit)} />
+      <span className="px-2 truncate pointer-events-none">{label}</span>
+      <div className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize hover:bg-white/30" onMouseDown={(e) => startRegionDrag(e, region, 'r', commit)} />
+    </div>
+  );
+
+  const trimActive = trim.start > 0 || (trim.end > 0 && trim.end < duration);
+  const trimEnd = trim.end > 0 ? trim.end : duration;
+
   return (
-    <div className="h-64 bg-[#131316] border-t border-neutral-800 flex flex-col shrink-0 text-xs">
+    <div className="h-72 bg-[#131316] border-t border-neutral-800 flex flex-col shrink-0 text-xs">
       <div className="h-10 border-b border-neutral-800 flex items-center justify-between px-4 bg-[#0E0E11]">
-        <div className="flex items-center gap-3 text-neutral-400">
-           <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" stroke="currentColor" strokeWidth="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg></button>
-           <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg></button>
-           <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg></button>
-           <div className="w-px h-4 bg-neutral-700 mx-1"></div>
-           <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" stroke="currentColor" strokeWidth="2"><path d="M3 7v6h6"></path><path d="M21 17v-6h-6"></path><path d="M21 3v6h-6"></path><path d="M3 21v-6h6"></path></svg></button>
+        <div className="flex items-center gap-2 text-neutral-400">
+          <button onClick={() => onTrimChange?.({ start: playhead, end: trimEnd })} title="Set trim start at playhead" className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">[ Trim In</button>
+          <button onClick={() => onTrimChange?.({ start: trim.start, end: playhead })} title="Set trim end at playhead" className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">Trim Out ]</button>
+          {trimActive && (
+            <button onClick={() => onTrimChange?.({ start: 0, end: 0 })} className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800 text-[10px]">Reset</button>
+          )}
+          <div className="w-px h-4 bg-neutral-700 mx-1"></div>
+          <button onClick={() => onZoomRegionsChange?.([...zoomRegions, { id: `zoom-${Date.now()}`, start: Math.max(0, playhead - 250), end: Math.min(duration, playhead + 2250), scale: 1.8, centerX: 0.5, centerY: 0.5 }])} title="Add zoom region at playhead" className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">+ Zoom</button>
+          <button onClick={onAutoZoom} title="Generate zoom regions from clicks" className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">⚡ Auto-zoom</button>
+          <button onClick={() => onSpeedRegionsChange?.([...speedRegions, { id: `speed-${Date.now()}`, start: Math.max(0, playhead), end: Math.min(duration, playhead + 3000), rate: 2 }])} title="Add 2x speed region" className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">+ Speed</button>
+          <div className="w-px h-4 bg-neutral-700 mx-1"></div>
+          <button onClick={() => onAnnotationsChange?.([...annotations, { id: `ann-${Date.now()}`, kind: 'text', start: playhead, end: Math.min(duration, playhead + 3000), x: 0.5, y: 0.3, text: 'Text', color: '#ffffff', size: 0.08 }])} className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">+ Text</button>
+          <button onClick={() => onAnnotationsChange?.([...annotations, { id: `ann-${Date.now()}`, kind: 'arrow', start: playhead, end: Math.min(duration, playhead + 3000), x: 0.5, y: 0.4, color: '#ffcc00', size: 0.1 }])} className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">+ Arrow</button>
+          <button onClick={() => onCaptionsChange?.([...captions, { id: `cap-${Date.now()}`, start: playhead, end: Math.min(duration, playhead + 3000), text: '' }])} className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">+ Caption</button>
+          <button onClick={onTranscribe} title="Transcribe audio (needs OpenAI key in Settings)" className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">🎙 Transcribe</button>
         </div>
         <div className="flex items-center gap-4 text-neutral-400">
-           <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" strokeWidth="2"></line></svg></button>
-           <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" stroke="currentColor" strokeWidth="2"><polygon points="11 19 2 12 11 5 11 19"></polygon><polygon points="22 19 13 12 22 5 22 19"></polygon></svg></button>
-           <button className="w-8 h-8 bg-neutral-800 rounded-full flex items-center justify-center text-white hover:bg-neutral-700"><svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 ml-0.5"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>
-           <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" stroke="currentColor" strokeWidth="2"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg></button>
-           <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4"><polygon points="19 4 9 12 19 20 19 4"></polygon><line x1="5" y1="5" x2="5" y2="19" stroke="currentColor" strokeWidth="2"></line></svg></button>
-        </div>
-        <div className="flex items-center gap-3 text-neutral-400">
-           <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg></button>
-           <div className="flex items-center gap-2">
-             <div className="w-24 h-1 bg-neutral-800 rounded-full relative">
-                <div className="absolute left-0 top-0 bottom-0 w-1/2 bg-blue-500 rounded-full"></div>
-                <div className="absolute left-1/2 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow border border-neutral-300"></div>
-             </div>
-           </div>
-           <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg></button>
+          {currentSpeed !== 1 && <span className="text-emerald-400">{currentSpeed}x</span>}
+          <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" strokeWidth="2"></line></svg></button>
         </div>
       </div>
-      
+
       <div className="flex-1 flex overflow-hidden">
-        <div className="w-40 border-r border-neutral-800 bg-[#0E0E11] flex flex-col pt-6 font-medium text-neutral-400">
-          <div className="h-10 border-b border-neutral-800/50 flex items-center px-3 gap-2">
-             <svg viewBox="0 0 24 24" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>
-             Video
-             <button className="ml-auto opacity-50 hover:opacity-100">✕</button>
-          </div>
-          <div className="h-10 border-b border-neutral-800/50 flex items-center px-3 gap-2">
-             <svg viewBox="0 0 24 24" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line></svg>
-             Interaction
-             <button className="ml-auto opacity-50 hover:opacity-100">✕</button>
-          </div>
-          <div className="h-10 border-b border-neutral-800/50 flex items-center px-3 gap-2">
-             <svg viewBox="0 0 24 24" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
-             SFX
-             <button className="ml-auto opacity-50 hover:opacity-100">✕</button>
-          </div>
-          <div className="h-10 border-b border-neutral-800/50 flex items-center px-3 gap-2">
-             <svg viewBox="0 0 24 24" fill="none" className="w-3.5 h-3.5" stroke="currentColor" strokeWidth="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
-             Camera
-             <button className="ml-auto opacity-50 hover:opacity-100">✕</button>
-          </div>
+        <div className="w-32 border-r border-neutral-800 bg-[#0E0E11] flex flex-col pt-6 font-medium text-neutral-400 text-[10px]">
+          {[['Video', '▶'], ['Interaction', 'Mic'], ['Zoom', '🔍'], ['Speed', '⏱'], ['Text', 'T'], ['Captions', 'CC'], ['SFX', '♪']].map(([label, icon]) => (
+            <div key={label} className="h-8 border-b border-neutral-800/50 flex items-center px-3 gap-2">
+              <span className="w-3.5 text-center">{icon}</span> {label}
+            </div>
+          ))}
         </div>
-        
+
         <div className="flex-1 relative overflow-x-auto bg-[#131316]">
           <div
             className="h-6 border-b border-neutral-800 bg-[#0E0E11] flex items-end px-4 text-[10px] text-neutral-500 overflow-hidden select-none sticky top-0 z-10"
-            onClick={(e) => seekFromEvent(e, e.currentTarget, duration, onSeek)}
+            onClick={(e) => onSeek(timeFromMouse(e))}
           >
             <div className="w-full flex justify-between">
               {rulerTicks.map((t, i) => (
@@ -142,57 +234,84 @@ export function VideoTimeline({ duration, events, soundEffects, camera, playhead
               ))}
             </div>
           </div>
-          
+
           <div
             ref={tracksRef}
-            className="relative pt-2 pb-2 px-4 h-[calc(100%-24px)]"
-            onClick={(e) => { if (tracksRef.current) seekFromEvent(e, tracksRef.current, duration, onSeek); }}
+            className="relative pt-2 pb-2 h-[calc(100%-24px)]"
+            onClick={(e) => onSeek(timeFromMouse(e))}
           >
+            {/* trim shading + handles */}
+            {trimActive && (
+              <>
+                {trim.start > 0 && <div className="absolute top-0 bottom-0 left-0 bg-black/50 z-10 pointer-events-none" style={{ width: `${(trim.start / duration) * 100}%` }} />}
+                {trimEnd < duration && <div className="absolute top-0 bottom-0 right-0 bg-black/50 z-10 pointer-events-none" style={{ width: `${((duration - trimEnd) / duration) * 100}%` }} />}
+                <div className="absolute top-0 bottom-0 w-2 bg-emerald-500/80 hover:bg-emerald-400 cursor-ew-resize z-20" style={{ left: `calc(${(trim.start / duration) * 100}% - 4px)` }} onMouseDown={startTrimDrag('start')} title="Trim start" />
+                <div className="absolute top-0 bottom-0 w-2 bg-emerald-500/80 hover:bg-emerald-400 cursor-ew-resize z-20" style={{ left: `calc(${(trimEnd / duration) * 100}% - 4px)` }} onMouseDown={startTrimDrag('end')} title="Trim end" />
+              </>
+            )}
+
             <div
               className="absolute top-0 bottom-0 w-px bg-white z-20 pointer-events-none"
-              style={{ left: `calc(16px + ${playheadPct}% - ${playheadPct * 0.32}px)` }}
+              style={{ left: `${playheadPct}%` }}
             >
               <div className="absolute top-0 -translate-x-1/2 w-2 h-2 rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]"></div>
-              <div className="absolute top-[-10px] -translate-x-1/2 -translate-y-full flex flex-col items-center">
-                <div className="bg-blue-500 text-white text-[10px] px-1.5 py-0.5 rounded shadow whitespace-nowrap">
-                  {formatTime(playhead)}
-                </div>
-                <div className="w-0 h-0 border-l-[3px] border-r-[3px] border-t-[4px] border-l-transparent border-r-transparent border-t-blue-500"></div>
-              </div>
             </div>
 
-            <div className="h-10 mb-0 flex items-center">
-              <div className="w-full h-7 bg-neutral-800 rounded border border-neutral-700/50 flex items-center px-2 gap-1">
-                <svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3 text-white shrink-0"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            <Lane label="Video">
+              <div className="w-full h-6 bg-neutral-800 rounded border border-neutral-700/50 flex items-center px-2 gap-1">
                 <span className="text-white text-[10px] font-medium">Video</span>
               </div>
-            </div>
-            
-            <div className="h-10 mb-0 flex items-center">
-              <div className="w-full h-7 bg-neutral-900 rounded border border-neutral-700/50 flex items-center px-2 relative text-white text-[10px] font-medium">
-                <svg viewBox="0 0 24 24" fill="none" className="w-3 h-3 mr-1 shrink-0" stroke="currentColor" strokeWidth="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path></svg>
-                Interaction
-                {events.map((ev, i) => (
+            </Lane>
+
+            <Lane label="Interaction">
+              <div className="w-full h-6 bg-neutral-900 rounded border border-neutral-700/50 relative text-white text-[10px] font-medium">
+                {events.filter(ev => ev.type !== 'move').map((ev, i) => (
                   <div
                     key={i}
-                    className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rotate-45 bg-white border border-purple-600 shadow-sm"
+                    className="absolute top-1/2 -translate-y-1/2 w-1.5 h-1.5 rotate-45 bg-white border border-purple-600"
                     style={{ left: `${duration > 0 ? (ev.timestamp / duration) * 100 : 0}%` }}
                   />
                 ))}
               </div>
-            </div>
-            
-            <div className="h-10 mb-0 flex items-center">
-              <div className="w-full h-7 bg-neutral-900 rounded border border-neutral-700/50 flex items-center px-2 relative text-white text-[10px] font-medium">
-                <svg viewBox="0 0 24 24" fill="none" className="w-3 h-3 mr-1 shrink-0" stroke="currentColor" strokeWidth="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon></svg>
-                SFX
+            </Lane>
+
+            <Lane label="Zoom">
+              <div className="w-full h-6 bg-neutral-900 rounded border border-neutral-700/50 relative">
+                {zoomRegions.map(r => regionBar(r, 'bg-blue-600/70 border-blue-500', `${r.scale.toFixed(1)}x`, 'zoom', (s, e2) =>
+                  onZoomRegionsChange?.(zoomRegions.map(z => z.id === r.id ? { ...z, start: s, end: e2 } : z))))}
+              </div>
+            </Lane>
+
+            <Lane label="Speed">
+              <div className="w-full h-6 bg-neutral-900 rounded border border-neutral-700/50 relative">
+                {speedRegions.map(r => regionBar(r, 'bg-emerald-600/70 border-emerald-500', `${r.rate}x`, 'speed', (s, e2) =>
+                  onSpeedRegionsChange?.(speedRegions.map(z => z.id === r.id ? { ...z, start: s, end: e2 } : z))))}
+              </div>
+            </Lane>
+
+            <Lane label="Text">
+              <div className="w-full h-6 bg-neutral-900 rounded border border-neutral-700/50 relative">
+                {annotations.map(a => regionBar(a, 'bg-amber-600/70 border-amber-500', a.kind === 'text' ? (a.text || 'Text') : '→ arrow', 'annotation', (s, e2) =>
+                  onAnnotationsChange?.(annotations.map(z => z.id === a.id ? { ...z, start: s, end: e2 } : z))))}
+              </div>
+            </Lane>
+
+            <Lane label="Captions">
+              <div className="w-full h-6 bg-neutral-900 rounded border border-neutral-700/50 relative">
+                {captions.map(c => regionBar(c, 'bg-sky-600/70 border-sky-500', c.text || 'caption', 'caption', (s, e2) =>
+                  onCaptionsChange?.(captions.map(z => z.id === c.id ? { ...z, start: s, end: e2 } : z))))}
+              </div>
+            </Lane>
+
+            <Lane label="SFX">
+              <div className="w-full h-6 bg-neutral-900 rounded border border-neutral-700/50 relative">
                 {soundEffects.map((sfx, i) => {
                   const isDragging = draggingIdRef.current === sfx.id;
                   const ts = isDragging && dragTimestamp !== null ? dragTimestamp : sfx.timestamp;
                   return (
                     <div
                       key={sfx.id || i}
-                      className="absolute top-1/2 -translate-y-1/2 h-5 bg-amber-700/80 rounded border border-amber-600/80 px-1 flex items-center cursor-grab select-none"
+                      className="absolute top-1/2 -translate-y-1/2 h-5 bg-amber-700/80 rounded border border-amber-600/80 px-1 flex items-center cursor-grab select-none text-[9px]"
                       style={{ left: `${duration > 0 ? (ts / duration) * 100 : 0}%` }}
                       onMouseDown={(e) => handleSfxMouseDown(e, sfx)}
                       onDoubleClick={() => onRemoveSoundEffect?.(sfx.id)}
@@ -202,18 +321,123 @@ export function VideoTimeline({ duration, events, soundEffects, camera, playhead
                   );
                 })}
               </div>
-            </div>
-            
-            <div className="h-10 flex items-center">
-              <div className="w-full h-7 bg-neutral-900 rounded border border-neutral-700/50 flex items-center px-2 relative text-white text-[10px] font-medium">
-                <svg viewBox="0 0 24 24" fill="none" className="w-3 h-3 mr-1 shrink-0" stroke="currentColor" strokeWidth="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path></svg>
-                Camera
-                <div className="bg-white/20 px-1 rounded ml-1 text-[8px] border border-white/30">Z {camera.zoom.toFixed(1)}</div>
-              </div>
-            </div>
+            </Lane>
           </div>
+
+          {/* selection inspector */}
+          {selection && selected && (
+            <div className="absolute top-8 right-4 z-30 bg-[#1C1C1F] border border-neutral-700 rounded-lg p-3 w-64 shadow-xl space-y-2 text-neutral-300">
+              <div className="flex justify-between items-center">
+                <span className="font-medium capitalize text-white">{selection.kind}</span>
+                <div className="flex gap-2">
+                  <button onClick={deleteSelected} className="text-red-400 hover:text-red-300 text-[11px]">Delete</button>
+                  <button onClick={() => setSelection(null)} className="text-neutral-500 hover:text-white">✕</button>
+                </div>
+              </div>
+
+              {selection.kind === 'zoom' && (() => {
+                const z = selected as ZoomRegion;
+                return (
+                  <>
+                    <label className="block text-[11px]">Scale {z.scale.toFixed(1)}x
+                      <input type="range" min="1.2" max="4" step="0.1" value={z.scale}
+                        onChange={e => onZoomRegionsChange?.(zoomRegions.map(r => r.id === z.id ? { ...r, scale: Number(e.target.value) } : r))}
+                        className="w-full accent-blue-500" />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <label>Center X
+                        <input type="range" min="0" max="1" step="0.02" value={z.centerX}
+                          onChange={e => onZoomRegionsChange?.(zoomRegions.map(r => r.id === z.id ? { ...r, centerX: Number(e.target.value) } : r))}
+                          className="w-full accent-blue-500" />
+                      </label>
+                      <label>Center Y
+                        <input type="range" min="0" max="1" step="0.02" value={z.centerY}
+                          onChange={e => onZoomRegionsChange?.(zoomRegions.map(r => r.id === z.id ? { ...r, centerY: Number(e.target.value) } : r))}
+                          className="w-full accent-blue-500" />
+                      </label>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const ev = events.find(ev => ev.type === 'click' && ev.timestamp >= z.start && ev.timestamp <= z.end);
+                        const p = ev && displaySize ? toNormalized(ev, displaySize) : null;
+                        if (!p) return;
+                        onZoomRegionsChange?.(zoomRegions.map(r => r.id === z.id ? { ...r, centerX: p.x, centerY: p.y } : r));
+                      }}
+                      className="w-full text-[11px] bg-neutral-800 hover:bg-neutral-700 rounded py-1"
+                    >Center on first click</button>
+                  </>
+                );
+              })()}
+
+              {selection.kind === 'speed' && (() => {
+                const s = selected as SpeedRegion;
+                return (
+                  <div className="flex gap-1">
+                    {[0.5, 1, 1.5, 2, 4].map(rate => (
+                      <button key={rate}
+                        onClick={() => onSpeedRegionsChange?.(speedRegions.map(r => r.id === s.id ? { ...r, rate } : r))}
+                        className={`flex-1 text-[11px] rounded py-1 ${s.rate === rate ? 'bg-emerald-500 text-black' : 'bg-neutral-800 hover:bg-neutral-700'}`}
+                      >{rate}x</button>
+                    ))}
+                  </div>
+                );
+              })()}
+
+              {selection.kind === 'annotation' && (() => {
+                const a = selected as Annotation;
+                return (
+                  <>
+                    {a.kind === 'text' && (
+                      <input value={a.text ?? ''} onChange={e => onAnnotationsChange?.(annotations.map(z => z.id === a.id ? { ...z, text: e.target.value } : z))}
+                        className="w-full bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-[11px]" placeholder="Text…" />
+                    )}
+                    <label className="block text-[11px]">Size {(a.size * 100).toFixed(0)}%
+                      <input type="range" min="0.03" max="0.25" step="0.01" value={a.size}
+                        onChange={e => onAnnotationsChange?.(annotations.map(z => z.id === a.id ? { ...z, size: Number(e.target.value) } : z))}
+                        className="w-full accent-amber-500" />
+                    </label>
+                    <div className="flex gap-2 items-center text-[11px]">
+                      Color
+                      <input type="color" value={a.color}
+                        onChange={e => onAnnotationsChange?.(annotations.map(z => z.id === a.id ? { ...z, color: e.target.value } : z))}
+                        className="w-8 h-6 bg-transparent border-0" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <label>X {(a.x * 100).toFixed(0)}%
+                        <input type="range" min="0.05" max="0.95" step="0.02" value={a.x}
+                          onChange={e => onAnnotationsChange?.(annotations.map(z => z.id === a.id ? { ...z, x: Number(e.target.value) } : z))}
+                          className="w-full accent-amber-500" />
+                      </label>
+                      <label>Y {(a.y * 100).toFixed(0)}%
+                        <input type="range" min="0.05" max="0.95" step="0.02" value={a.y}
+                          onChange={e => onAnnotationsChange?.(annotations.map(z => z.id === a.id ? { ...z, y: Number(e.target.value) } : z))}
+                          className="w-full accent-amber-500" />
+                      </label>
+                    </div>
+                  </>
+                );
+              })()}
+
+              {selection.kind === 'caption' && (() => {
+                const c = selected as Caption;
+                return (
+                  <textarea value={c.text} rows={3}
+                    onChange={e => onCaptionsChange?.(captions.map(z => z.id === c.id ? { ...z, text: e.target.value } : z))}
+                    className="w-full bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-[11px] resize-none" placeholder="Caption text…" />
+                );
+              })()}
+            </div>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function Lane({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="h-8 flex items-center" title={label}>
+      {children}
     </div>
   );
 }

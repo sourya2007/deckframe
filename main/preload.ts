@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 function subscribe<T>(channel: string, cb: (payload: T) => void) {
   const handler = (_: any, payload: T) => cb(payload);
@@ -10,9 +10,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // recording
   getSources: (thumbnails?: boolean) => ipcRenderer.invoke('get-sources', { thumbnails }),
   startRecording: (sourceId: string) => ipcRenderer.invoke('start-recording', sourceId),
-  stopRecording: (chunks: ArrayBuffer, micChunks?: ArrayBuffer) =>
-    ipcRenderer.invoke('stop-recording', new Uint8Array(chunks), micChunks ? new Uint8Array(micChunks) : undefined),
+  stopRecording: (chunks: ArrayBuffer, micChunks?: ArrayBuffer, webcamChunks?: ArrayBuffer) =>
+    ipcRenderer.invoke('stop-recording', new Uint8Array(chunks), micChunks ? new Uint8Array(micChunks) : undefined, webcamChunks ? new Uint8Array(webcamChunks) : undefined),
   loadEvents: (filePath: string) => ipcRenderer.invoke('load-events', filePath),
+
+  // projects
+  saveProject: (projectJson: string) => ipcRenderer.invoke('save-project', projectJson),
+  openProject: () => ipcRenderer.invoke('open-project'),
+  // resolve an imported File to its real path (project files need stable paths)
+  filePathForFile: (file: File) => webUtils.getPathForFile(file),
+
+  // captions
+  transcribeAudio: (audioPath: string) => ipcRenderer.invoke('transcribe-audio', audioPath),
 
   // capture flow (main window)
   showSourceSelector: () => ipcRenderer.invoke('show-source-selector'),
@@ -34,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportOpen: (opts: any) => ipcRenderer.invoke('export-open', opts),
   exportCancel: (reason?: string) => ipcRenderer.invoke('export-cancel', reason),
   revealExportedFile: (filePath: string) => ipcRenderer.invoke('reveal-file', filePath),
+  getExportScene: () => ipcRenderer.invoke('get-export-scene'),
   exportStreamWrite: (bytes: Uint8Array) => ipcRenderer.send('export-stream-write', bytes),
   exportStreamClose: () => ipcRenderer.send('export-stream-close'),
   exportProgressReport: (pct: number) => ipcRenderer.send('export-progress-report', pct),
