@@ -1,4 +1,4 @@
-import type { InteractionEvent, ZoomRegion, SpeedRegion, Annotation, Caption } from '../types/project';
+import type { InteractionEvent, ZoomRegion, SpeedRegion, Annotation, Caption, CameraTransform, CameraKeyframe, MotionEffect } from '../types/project';
 
 // Pure playback/editing logic shared by the editor viewport and the export
 // window — WYSIWYG export depends on both using exactly these functions.
@@ -88,6 +88,78 @@ export function cropMap(crop: Crop, x: number, y: number): { x: number; y: numbe
     x: (x - (crop.centerX - half)) * crop.zoom,
     y: (y - (crop.centerY - half)) * crop.zoom,
   };
+}
+
+const mix = (a: number, b: number, k: number) => a + (b - a) * k;
+
+// camera pose at time t, interpolated between full-pose keyframes.
+// Before the first / after the last keyframe the nearest pose is held.
+export function cameraAtTime(base: CameraTransform, keyframes: CameraKeyframe[], t: number): CameraTransform {
+  if (keyframes.length === 0) return base;
+  if (t <= keyframes[0].time) return keyframes[0].camera;
+  const last = keyframes[keyframes.length - 1];
+  if (t >= last.time) return last.camera;
+
+  for (let i = 0; i < keyframes.length - 1; i++) {
+    const a = keyframes[i];
+    const b = keyframes[i + 1];
+    if (t < a.time || t >= b.time) continue;
+    const k = (t - a.time) / Math.max(1, b.time - a.time);
+    const e = a.easing === 'linear' ? k : a.easing === 'hold' ? 0 : k * k * (3 - 2 * k);
+    return {
+      position: [
+        mix(a.camera.position[0], b.camera.position[0], e),
+        mix(a.camera.position[1], b.camera.position[1], e),
+        mix(a.camera.position[2], b.camera.position[2], e),
+      ],
+      rotation: [
+        mix(a.camera.rotation[0], b.camera.rotation[0], e),
+        mix(a.camera.rotation[1], b.camera.rotation[1], e),
+        mix(a.camera.rotation[2], b.camera.rotation[2], e),
+      ],
+      scale: [
+        mix(a.camera.scale[0], b.camera.scale[0], e),
+        mix(a.camera.scale[1], b.camera.scale[1], e),
+        mix(a.camera.scale[2], b.camera.scale[2], e),
+      ],
+      zoom: mix(a.camera.zoom, b.camera.zoom, e),
+    };
+  }
+  return last.camera;
+}
+
+export interface MotionState {
+  shakeX: number;
+  shakeY: number;
+  pulse: number;      // crop zoom multiplier (>= 1)
+  glitch: boolean;
+  fadeColor: string;
+  fadeOpacity: number;
+}
+
+// combined motion-effect state at time t; effects ramp 250ms at their edges
+export function motionAt(effects: MotionEffect[], t: number): MotionState {
+  const out: MotionState = { shakeX: 0, shakeY: 0, pulse: 1, glitch: false, fadeColor: '#000000', fadeOpacity: 0 };
+  for (const fx of effects) {
+    if (t < fx.start || t >= fx.end) continue;
+    const edge = Math.max(1, Math.min(250, (fx.end - fx.start) / 2));
+    const amount = fx.intensity * Math.min(1, (t - fx.start) / edge, (fx.end - t) / edge);
+    if (amount <= 0) continue;
+
+    if (fx.type === 'shake') {
+      out.shakeX += Math.sin(t * 0.025) * 0.12 * amount;
+      out.shakeY += Math.cos(t * 0.031) * 0.09 * amount;
+    } else if (fx.type === 'pulse') {
+      const progress = (t - fx.start) / Math.max(1, fx.end - fx.start);
+      out.pulse *= 1 + 0.15 * amount * Math.sin(Math.PI * progress);
+    } else if (fx.type === 'glitch') {
+      out.glitch = true;
+    } else if (fx.type === 'fade-black' || fx.type === 'fade-white') {
+      out.fadeColor = fx.type === 'fade-black' ? '#000000' : '#ffffff';
+      out.fadeOpacity = Math.max(out.fadeOpacity, amount);
+    }
+  }
+  return out;
 }
 
 export function activeCaption(captions: Caption[], t: number): Caption | null {

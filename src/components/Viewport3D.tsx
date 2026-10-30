@@ -5,8 +5,9 @@ import { EffectComposer, DepthOfField, Glitch, Vignette } from '@react-three/pos
 import * as THREE from 'three';
 import type {
   CameraTransform, InteractionEvent, FrameStyle, Annotation, Caption, WebcamStyle, ZoomRegion,
+  CameraKeyframe, MotionEffect,
 } from '../types/project';
-import { cursorAt, activeRipples, activeAnnotations, activeCaption, cropAt, cropMap } from '../lib/timeline';
+import { cursorAt, activeRipples, activeAnnotations, activeCaption, cropAt, cropMap, cameraAtTime, motionAt } from '../lib/timeline';
 import type { DisplayInfo, Crop } from '../lib/timeline';
 
 // The scene plane is 16x9 world units; every overlay renders as a mesh so the
@@ -18,7 +19,6 @@ interface Viewport3DProps {
   isCinematic: boolean;
   dofEnabled: boolean;
   playhead: number;
-  activeEffect?: string | null;
   // export window: reuse a video element owned by the caller (its audio feeds
   // MediaRecorder), play at its own rate (freeRun), and expose the canvas
   externalVideo?: HTMLVideoElement | null;
@@ -34,6 +34,9 @@ interface Viewport3DProps {
   webcamUrl?: string | null;
   webcam?: WebcamStyle;
   zoomRegions?: ZoomRegion[];
+  // phase 4: keyframed camera + motion effect regions
+  cameraKeyframes?: CameraKeyframe[];
+  motionEffects?: MotionEffect[];
 }
 
 // video content scale inside the frame (padding shrinks it)
@@ -413,9 +416,10 @@ function CameraRig({ transform }: { transform: CameraTransform }) {
 }
 
 export function Viewport3D({
-  videoUrl, cameraTransform, isCinematic, dofEnabled, playhead, activeEffect,
+  videoUrl, cameraTransform, isCinematic, dofEnabled, playhead,
   externalVideo, freeRun, onCanvas,
   events, displaySize, frame, annotations, captions, playbackRate, webcamUrl, webcam, zoomRegions,
+  cameraKeyframes, motionEffects,
 }: Viewport3DProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -426,8 +430,23 @@ export function Viewport3D({
   }, [onCanvas]);
 
   const vs = contentScale(frame);
-  // one crop per rendered frame, shared by the video texture and the overlays
-  const crop = useMemo(() => cropAt(zoomRegions ?? [], playhead), [zoomRegions, playhead]);
+  const motion = useMemo(() => motionAt(motionEffects ?? [], playhead), [motionEffects, playhead]);
+  // keyframed pose replaces the static camera; shake rides on top of it
+  const camera = useMemo(() => {
+    const pose = cameraAtTime(cameraTransform, cameraKeyframes ?? [], playhead);
+    if (!motion.shakeX && !motion.shakeY) return pose;
+    return {
+      ...pose,
+      position: [pose.position[0] + motion.shakeX, pose.position[1] + motion.shakeY, pose.position[2]] as [number, number, number],
+    };
+  }, [cameraTransform, cameraKeyframes, playhead, motion.shakeX, motion.shakeY]);
+  // one crop per rendered frame, shared by the video texture and the overlays;
+  // the pulse effect swells the crop zoom around its existing center
+  const crop = useMemo(() => {
+    const c = cropAt(zoomRegions ?? [], playhead);
+    return motion.pulse === 1 ? c : { ...c, zoom: c.zoom * motion.pulse };
+  }, [zoomRegions, playhead, motion.pulse]);
+  const glitch = motion.glitch;
   const showCursor = !!(events && events.length && displaySize);
   const showFrame = !!frame && frame.mode !== 'none';
   const showAnnotations = !!(annotations && annotations.length);
@@ -443,7 +462,7 @@ export function Viewport3D({
           <OrthographicCamera makeDefault position={[0, 0, 10]} zoom={50} />
         )}
 
-        <CameraRig transform={cameraTransform} />
+        <CameraRig transform={camera} />
 
         <ambientLight intensity={1} />
 
@@ -465,13 +484,19 @@ export function Viewport3D({
         {showCaptions && <CaptionLayer captions={captions!} playhead={playhead} vs={vs} />}
         {showWebcam && <WebcamBubble url={webcamUrl!} style={webcam!} playhead={playhead} freeRun={freeRun} vs={vs} syncVideo={externalVideo} />}
 
-        {(isCinematic || activeEffect === 'Glitch' || activeEffect === 'ChromaticAberration') && (
+        {motion.fadeOpacity > 0.001 && (
+          <mesh position={[0, 0, 0.6]}>
+            <planeGeometry args={[60, 60]} />
+            <meshBasicMaterial color={motion.fadeColor} transparent opacity={motion.fadeOpacity} depthWrite={false} />
+          </mesh>
+        )}
+
+        {(isCinematic || glitch) && (
           <EffectComposer>
             <>
               {isCinematic && dofEnabled && <DepthOfField focusDistance={0} focalLength={0.02} bokehScale={2} height={480} />}
               {isCinematic && <Vignette eskil={false} offset={0.5} darkness={0.5} />}
-              {activeEffect === 'Glitch' && <Glitch />}
-
+              {glitch && <Glitch />}
             </>
           </EffectComposer>
         )}

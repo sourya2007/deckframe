@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { InteractionEvent, SoundEffect, CameraTransform, TrimState, ZoomRegion, SpeedRegion, Annotation, Caption } from '../types/project';
+import { InteractionEvent, SoundEffect, CameraTransform, TrimState, ZoomRegion, SpeedRegion, Annotation, Caption, CameraKeyframe, MotionEffect } from '../types/project';
 import { speedAt, toNormalized } from '../lib/timeline';
 import type { DisplayInfo } from '../lib/timeline';
 
@@ -26,6 +26,11 @@ interface VideoTimelineProps {
   onAutoZoom?: () => void;
   onTranscribe?: () => void;
   displaySize?: DisplayInfo | null;
+  // phase 4
+  cameraKeyframes: CameraKeyframe[];
+  onCameraKeyframesChange?: (keyframes: CameraKeyframe[]) => void;
+  motionEffects: MotionEffect[];
+  onMotionEffectsChange?: (effects: MotionEffect[]) => void;
 }
 
 function formatTime(ms: number): string {
@@ -48,7 +53,7 @@ function getRulerTicks(duration: number): number[] {
 }
 
 type Selection =
-  | { kind: 'zoom' | 'speed' | 'annotation' | 'caption'; id: string }
+  | { kind: 'zoom' | 'speed' | 'annotation' | 'caption' | 'keyframe' | 'effect'; id: string }
   | null;
 
 export function VideoTimeline({
@@ -57,6 +62,7 @@ export function VideoTimeline({
   trim, onTrimChange, zoomRegions, onZoomRegionsChange,
   speedRegions, onSpeedRegionsChange, annotations, onAnnotationsChange,
   captions, onCaptionsChange, onAutoZoom, onTranscribe, displaySize,
+  cameraKeyframes, onCameraKeyframesChange, motionEffects, onMotionEffectsChange,
 }: VideoTimelineProps) {
   const tracksRef = useRef<HTMLDivElement>(null);
   const draggingIdRef = useRef<string | null>(null);
@@ -149,6 +155,8 @@ export function VideoTimeline({
     if (selection.kind === 'zoom') return zoomRegions.find(r => r.id === selection.id) ?? null;
     if (selection.kind === 'speed') return speedRegions.find(r => r.id === selection.id) ?? null;
     if (selection.kind === 'annotation') return annotations.find(a => a.id === selection.id) ?? null;
+    if (selection.kind === 'keyframe') return cameraKeyframes.find(k => k.id === selection.id) ?? null;
+    if (selection.kind === 'effect') return motionEffects.find(fx => fx.id === selection.id) ?? null;
     return captions.find(c => c.id === selection.id) ?? null;
   })();
 
@@ -158,6 +166,8 @@ export function VideoTimeline({
     if (kind === 'zoom') onZoomRegionsChange?.(zoomRegions.filter(r => r.id !== id));
     else if (kind === 'speed') onSpeedRegionsChange?.(speedRegions.filter(r => r.id !== id));
     else if (kind === 'annotation') onAnnotationsChange?.(annotations.filter(a => a.id !== id));
+    else if (kind === 'keyframe') onCameraKeyframesChange?.(cameraKeyframes.filter(k => k.id !== id));
+    else if (kind === 'effect') onMotionEffectsChange?.(motionEffects.filter(fx => fx.id !== id));
     else onCaptionsChange?.(captions.filter(c => c.id !== id));
     setSelection(null);
   };
@@ -167,7 +177,7 @@ export function VideoTimeline({
     region: { id: string; start: number; end: number },
     color: string,
     label: string,
-    kind: 'zoom' | 'speed' | 'annotation' | 'caption',
+    kind: 'zoom' | 'speed' | 'annotation' | 'caption' | 'effect',
     commit: (start: number, end: number) => void,
   ) => (
     <div
@@ -190,7 +200,7 @@ export function VideoTimeline({
   const trimEnd = trim.end > 0 ? trim.end : duration;
 
   return (
-    <div className="h-72 bg-[#131316] border-t border-neutral-800 flex flex-col shrink-0 text-xs">
+    <div className="h-80 bg-[#131316] border-t border-neutral-800 flex flex-col shrink-0 text-xs">
       <div className="h-10 border-b border-neutral-800 flex items-center justify-between px-4 bg-[#0E0E11]">
         <div className="flex items-center gap-2 text-neutral-400">
           <button onClick={() => onTrimChange?.({ start: playhead, end: trimEnd })} title="Set trim start at playhead" className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">[ Trim In</button>
@@ -216,8 +226,8 @@ export function VideoTimeline({
 
       <div className="flex-1 flex overflow-hidden">
         <div className="w-32 border-r border-neutral-800 bg-[#0E0E11] flex flex-col pt-6 font-medium text-neutral-400 text-[10px]">
-          {[['Video', '▶'], ['Interaction', 'Mic'], ['Zoom', '🔍'], ['Speed', '⏱'], ['Text', 'T'], ['Captions', 'CC'], ['SFX', '♪']].map(([label, icon]) => (
-            <div key={label} className="h-8 border-b border-neutral-800/50 flex items-center px-3 gap-2">
+          {[['Video', '▶'], ['Interaction', 'Mic'], ['Camera', '◆'], ['Zoom', '🔍'], ['Speed', '⏱'], ['FX', '✨'], ['Text', 'T'], ['Captions', 'CC'], ['SFX', '♪']].map(([label, icon]) => (
+            <div key={label} className="h-7 border-b border-neutral-800/50 flex items-center px-3 gap-2">
               <span className="w-3.5 text-center">{icon}</span> {label}
             </div>
           ))}
@@ -225,7 +235,7 @@ export function VideoTimeline({
 
         <div className="flex-1 relative overflow-x-auto bg-[#131316]">
           <div
-            className="h-6 border-b border-neutral-800 bg-[#0E0E11] flex items-end px-4 text-[10px] text-neutral-500 overflow-hidden select-none sticky top-0 z-10"
+            className="h-6 border-b border-neutral-800 bg-[#0E0E11] flex items-end text-[10px] text-neutral-500 overflow-hidden select-none sticky top-0 z-10"
             onClick={(e) => onSeek(timeFromMouse(e))}
           >
             <div className="w-full flex justify-between">
@@ -237,7 +247,7 @@ export function VideoTimeline({
 
           <div
             ref={tracksRef}
-            className="relative pt-2 pb-2 h-[calc(100%-24px)]"
+            className="relative h-[calc(100%-24px)]"
             onClick={(e) => onSeek(timeFromMouse(e))}
           >
             {/* trim shading + handles */}
@@ -275,6 +285,20 @@ export function VideoTimeline({
               </div>
             </Lane>
 
+            <Lane label="Camera">
+              <div className="w-full h-6 bg-neutral-900 rounded border border-neutral-700/50 relative">
+                {cameraKeyframes.map(k => (
+                  <button
+                    key={k.id}
+                    title={`Camera keyframe @ ${formatTime(k.time)} — ${k.easing}`}
+                    onClick={e => { e.stopPropagation(); onSeek(k.time); setSelection({ kind: 'keyframe', id: k.id }); }}
+                    className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rotate-45 border ${selection?.id === k.id ? 'bg-white border-white' : 'bg-fuchsia-500 border-fuchsia-300'}`}
+                    style={{ left: `${duration > 0 ? (k.time / duration) * 100 : 0}%` }}
+                  />
+                ))}
+              </div>
+            </Lane>
+
             <Lane label="Zoom">
               <div className="w-full h-6 bg-neutral-900 rounded border border-neutral-700/50 relative">
                 {zoomRegions.map(r => regionBar(r, 'bg-blue-600/70 border-blue-500', `${r.scale.toFixed(1)}x`, 'zoom', (s, e2) =>
@@ -286,6 +310,13 @@ export function VideoTimeline({
               <div className="w-full h-6 bg-neutral-900 rounded border border-neutral-700/50 relative">
                 {speedRegions.map(r => regionBar(r, 'bg-emerald-600/70 border-emerald-500', `${r.rate}x`, 'speed', (s, e2) =>
                   onSpeedRegionsChange?.(speedRegions.map(z => z.id === r.id ? { ...z, start: s, end: e2 } : z))))}
+              </div>
+            </Lane>
+
+            <Lane label="FX">
+              <div className="w-full h-6 bg-neutral-900 rounded border border-neutral-700/50 relative">
+                {motionEffects.map(fx => regionBar(fx, 'bg-rose-600/70 border-rose-500', fx.type, 'effect', (s, e2) =>
+                  onMotionEffectsChange?.(motionEffects.map(z => z.id === fx.id ? { ...z, start: s, end: e2 } : z))))}
               </div>
             </Lane>
 
@@ -426,6 +457,37 @@ export function VideoTimeline({
                     className="w-full bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-[11px] resize-none" placeholder="Caption text…" />
                 );
               })()}
+
+              {selection.kind === 'keyframe' && (() => {
+                const k = selected as CameraKeyframe;
+                return (
+                  <>
+                    <div className="text-[11px] text-neutral-400">Pose keyframe at {formatTime(k.time)}</div>
+                    <label className="block text-[11px]">Easing into next
+                      <select
+                        value={k.easing}
+                        onChange={e => onCameraKeyframesChange?.(cameraKeyframes.map(x => x.id === k.id ? { ...x, easing: e.target.value as CameraKeyframe['easing'] } : x))}
+                        className="w-full bg-neutral-900 border border-neutral-700 rounded px-1 py-1 mt-1"
+                      >
+                        <option value="ease">Ease</option>
+                        <option value="linear">Linear</option>
+                        <option value="hold">Hold</option>
+                      </select>
+                    </label>
+                  </>
+                );
+              })()}
+
+              {selection.kind === 'effect' && (() => {
+                const fx = selected as MotionEffect;
+                return (
+                  <label className="block text-[11px]">Intensity {(fx.intensity * 100).toFixed(0)}%
+                    <input type="range" min="0.1" max="1" step="0.05" value={fx.intensity}
+                      onChange={e => onMotionEffectsChange?.(motionEffects.map(x => x.id === fx.id ? { ...x, intensity: Number(e.target.value) } : x))}
+                      className="w-full accent-rose-500" />
+                  </label>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -436,7 +498,7 @@ export function VideoTimeline({
 
 function Lane({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="h-8 flex items-center" title={label}>
+    <div className="h-7 flex items-center" title={label}>
       {children}
     </div>
   );

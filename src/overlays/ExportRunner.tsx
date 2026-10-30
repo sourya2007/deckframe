@@ -3,6 +3,7 @@ import {Viewport3D} from '../components/Viewport3D';
 import {speedAt} from '../lib/timeline';
 import type {
   CameraTransform, InteractionEvent, ZoomRegion, SpeedRegion, Annotation, Caption, FrameStyle, WebcamStyle,
+  CameraKeyframe, MotionEffect,
 } from '../types/project';
 
 // Hidden export window: plays the recording through the shared 3D scene,
@@ -16,7 +17,6 @@ interface ExportScene {
   cameraTransform?: CameraTransform;
   isCinematic?: boolean;
   dofEnabled?: boolean;
-  activeEffect?: string | null;
   events?: InteractionEvent[];
   displaySize?: { width: number; height: number } | null;
   trim?: { start: number; end: number };
@@ -27,6 +27,8 @@ interface ExportScene {
   frame?: FrameStyle;
   webcam?: WebcamStyle;
   webcamPath?: string | null;
+  cameraKeyframes?: CameraKeyframe[];
+  motionEffects?: MotionEffect[];
 }
 
 const toFileUrl = (p: string) => 'file:///' + p.replace(/\\/g, '/');
@@ -172,7 +174,6 @@ export function ExportRunner() {
         isCinematic={scene.isCinematic ?? false}
         dofEnabled={scene.dofEnabled ?? false}
         playhead={playhead}
-        activeEffect={scene.activeEffect ?? null}
         events={scene.events ?? []}
         displaySize={scene.displaySize ?? null}
         frame={scene.frame}
@@ -181,6 +182,8 @@ export function ExportRunner() {
         webcamUrl={scene.webcamPath ? toFileUrl(scene.webcamPath) : null}
         webcam={scene.webcam}
         zoomRegions={scene.zoomRegions ?? []}
+        cameraKeyframes={scene.cameraKeyframes ?? []}
+        motionEffects={scene.motionEffects ?? []}
       />
     </div>
   );

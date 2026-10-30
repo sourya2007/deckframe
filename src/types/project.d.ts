@@ -19,6 +19,25 @@ export interface CameraTransform {
   zoom: number;
 }
 
+// full-pose camera keyframes: interpolate between snapshots instead of
+// per-channel tracks — enough for lite-AE moves without a curve editor
+export interface CameraKeyframe {
+  id: string;
+  time: number;       // ms along the source video
+  camera: CameraTransform;
+  easing: 'linear' | 'ease' | 'hold'; // easing into the next keyframe
+}
+
+export type MotionEffectType = 'shake' | 'pulse' | 'glitch' | 'fade-black' | 'fade-white';
+
+export interface MotionEffect {
+  id: string;
+  type: MotionEffectType;
+  start: number;
+  end: number;
+  intensity: number;  // 0..1
+}
+
 // editor regions (all times in ms along the source video)
 export interface TrimState { start: number; end: number }
 
@@ -90,6 +109,8 @@ export interface ProjectState {
   displaySize: { width: number; height: number } | null;
   soundEffects: SoundEffect[];
   camera: CameraTransform;
+  cameraKeyframes: CameraKeyframe[];
+  motionEffects: MotionEffect[];
   isCinematic: boolean;
   dofEnabled: boolean;
   trim: TrimState;
@@ -106,6 +127,8 @@ export type ProjectAction =
   | { type: 'SET_SIDECARS'; micPath?: string | null; webcamPath?: string | null }
   | { type: 'SET_EVENTS'; events: InteractionEvent[]; displaySize?: { width: number; height: number } | null }
   | { type: 'UPDATE_CAMERA'; payload: Partial<CameraTransform> }
+  | { type: 'SET_CAMERA_KEYFRAMES'; keyframes: CameraKeyframe[] }
+  | { type: 'SET_MOTION_EFFECTS'; effects: MotionEffect[] }
   | { type: 'SET_MODE'; isCinematic: boolean }
   | { type: 'TOGGLE_DOF' }
   | { type: 'ADD_SOUND_EFFECT'; effect: SoundEffect }

@@ -15,6 +15,8 @@ const initialState: ProjectState = {
     scale: [1, 1, 1],
     zoom: 1,
   },
+  cameraKeyframes: [],
+  motionEffects: [],
   isCinematic: false,
   dofEnabled: false,
   trim: { start: 0, end: 0 },   // end=0 means "full duration"
@@ -40,6 +42,10 @@ function reducer(state: ProjectState, action: ProjectAction): ProjectState {
       return { ...state, events: action.events, displaySize: action.displaySize !== undefined ? action.displaySize : state.displaySize };
     case 'UPDATE_CAMERA':
       return { ...state, camera: { ...state.camera, ...action.payload } };
+    case 'SET_CAMERA_KEYFRAMES':
+      return { ...state, cameraKeyframes: action.keyframes };
+    case 'SET_MOTION_EFFECTS':
+      return { ...state, motionEffects: action.effects };
     case 'SET_MODE':
       return { ...state, isCinematic: action.isCinematic };
     case 'TOGGLE_DOF':

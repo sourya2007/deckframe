@@ -3,6 +3,7 @@
 const assert = require('assert');
 const {
   cursorAt, speedAt, cropAt, cropMap, autoZoomRegions, activeCaption, activeAnnotations, activeRipples, toNormalized,
+  cameraAtTime, motionAt,
 } = require(process.argv[2]);
 
 const display = { width: 1920, height: 1080, x: 0, y: 0 };
@@ -69,5 +70,57 @@ assert.strictEqual(activeAnnotations([
   { id: 'a', kind: 'text', start: 0, end: 100, x: 0.5, y: 0.5, text: 'x', color: '#fff', size: 0.1 },
   { id: 'b', kind: 'arrow', start: 200, end: 300, x: 0.5, y: 0.5, color: '#fff', size: 0.1 },
 ], 50).length, 1);
+
+// camera keyframes: hold at both ends, interpolate the full pose between
+const poseA = { position: [0, 0, 5], rotation: [0, 0, 0], scale: [1, 1, 1], zoom: 1 };
+const poseB = { position: [4, 2, 5], rotation: [0, 0.5, 0], scale: [1, 1, 1], zoom: 2 };
+const kfs = [
+  { id: 'k1', time: 1000, camera: poseA, easing: 'linear' },
+  { id: 'k2', time: 3000, camera: poseB, easing: 'ease' },
+];
+assert.deepStrictEqual(cameraAtTime(poseA, [], 500), poseA);
+assert.deepStrictEqual(cameraAtTime(poseA, kfs, 500), poseA);   // holds first pose
+assert.deepStrictEqual(cameraAtTime(poseA, kfs, 9000), poseB);  // holds last pose
+const midCam = cameraAtTime(poseA, kfs, 2000);
+assert.strictEqual(midCam.zoom, 1.5);
+assert.strictEqual(midCam.position[0], 2);
+assert.strictEqual(midCam.rotation[1], 0.25);
+
+// hold easing stays on the left pose until the next keyframe
+const holdKfs = [
+  { id: 'h1', time: 0, camera: poseA, easing: 'hold' },
+  { id: 'h2', time: 1000, camera: poseB, easing: 'ease' },
+];
+assert.strictEqual(cameraAtTime(poseA, holdKfs, 999).zoom, 1);
+
+// ease is nonlinear: smoothstep(0.25) = 0.15625
+const easeKfs = [
+  { id: 'e1', time: 0, camera: poseA, easing: 'ease' },
+  { id: 'e2', time: 1000, camera: poseB, easing: 'ease' },
+];
+assert.ok(Math.abs(cameraAtTime(poseA, easeKfs, 250).zoom - 1.15625) < 1e-9);
+
+// motion effects: neutral when inactive, combined state when active
+const neutral = motionAt([], 0);
+assert.strictEqual(neutral.pulse, 1);
+assert.strictEqual(neutral.glitch, false);
+assert.strictEqual(neutral.fadeOpacity, 0);
+const fx = [
+  { id: 'f1', type: 'shake', start: 0, end: 1000, intensity: 1 },
+  { id: 'f2', type: 'pulse', start: 0, end: 1000, intensity: 1 },
+  { id: 'f3', type: 'glitch', start: 0, end: 1000, intensity: 1 },
+  { id: 'f4', type: 'fade-black', start: 0, end: 1000, intensity: 1 },
+];
+const m = motionAt(fx, 500);
+assert.ok(Math.abs(m.shakeX) <= 0.12 && Math.abs(m.shakeY) <= 0.09);
+assert.ok(m.pulse > 1 && m.pulse <= 1.15);
+assert.strictEqual(m.glitch, true);
+assert.strictEqual(m.fadeColor, '#000000');
+assert.strictEqual(m.fadeOpacity, 1);
+assert.strictEqual(motionAt(fx, 1500).fadeOpacity, 0);
+assert.strictEqual(motionAt(fx, 1500).glitch, false);
+const fadeWhite = motionAt([{ id: 'w', type: 'fade-white', start: 0, end: 1000, intensity: 0.5 }], 500);
+assert.strictEqual(fadeWhite.fadeColor, '#ffffff');
+assert.strictEqual(fadeWhite.fadeOpacity, 0.5);
 
 console.log('timeline smoke: all checks passed');

@@ -11,8 +11,8 @@ import { EffectsView } from './components/EffectsView';
 import { AudioLibraryView } from './components/AudioLibraryView';
 import { ExportModal } from './components/ExportModal';
 import { EmptyStateView } from './components/EmptyStateView';
-import { autoZoomRegions, speedAt } from './lib/timeline';
-import type { FrameStyle, WebcamStyle } from './types/project';
+import { autoZoomRegions, speedAt, uid } from './lib/timeline';
+import type { FrameStyle, WebcamStyle, MotionEffectType } from './types/project';
 
 const toFileUrl = (p: string) => 'file:///' + p.replace(/\\/g, '/');
 
@@ -23,7 +23,6 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [playhead, setPlayhead] = useState(0);
   const [duration, setDuration] = useState(10000); // 10s mock duration
-  const [activeEffect, setActiveEffect] = useState<string | null>(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -342,28 +341,34 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
-  const handleEffectSelect = (name: string) => {
-    setActiveEffect(prev => prev === name ? null : name);
-    const rotationEffects = ['Tilt-Shift', 'Perspective Warp', '3D Rotate', 'Corner Pin'];
-    const transitionEffects = ['Cross Dissolve', 'Fade to Black', 'Fade to White', 'Glitch', 'Slide Left', 'Slide Right', 'Wipe', 'Push'];
-    const textEffects = ['Lower Thirds', 'Text Animation', 'Animated Icons'];
+  const handleEffectSelect = (type: MotionEffectType) => {
+    dispatch({
+      type: 'SET_MOTION_EFFECTS',
+      effects: [...state.motionEffects, {
+        id: uid('fx'),
+        type,
+        start: playhead,
+        end: Math.min(duration, playhead + 2000),
+        intensity: 0.7,
+      }],
+    });
+  };
 
-    if (rotationEffects.includes(name)) {
-      dispatch({ type: 'UPDATE_CAMERA', payload: { rotation: [0.2, 0.3, 0.1] } });
-    } else if (name === 'Zoom In') {
-      dispatch({ type: 'UPDATE_CAMERA', payload: { zoom: state.camera.zoom + 0.5 } });
-    } else if (name === 'Zoom Out') {
-      dispatch({ type: 'UPDATE_CAMERA', payload: { zoom: Math.max(0.5, state.camera.zoom - 0.5) } });
-    } else if (name === 'Camera Shake') {
-      dispatch({ type: 'UPDATE_CAMERA', payload: { position: [0.1, 0.1, state.camera.position[2]] } });
-    } else if (name === 'Parallax') {
-      dispatch({ type: 'UPDATE_CAMERA', payload: { position: [state.camera.position[0], state.camera.position[1], state.camera.position[2] - 1] } });
-    } else if (transitionEffects.includes(name)) {
-      dispatch({ type: 'SET_MODE', isCinematic: !state.isCinematic });
-    } else if (textEffects.includes(name)) {
-      dispatch({ type: 'SET_MODE', isCinematic: true });
-      dispatch({ type: 'UPDATE_CAMERA', payload: { zoom: 1.2 } });
+  const handleAddKeyframe = () => {
+    // re-key within 100ms updates that pose instead of stacking duplicates
+    const existing = state.cameraKeyframes.find(k => Math.abs(k.time - playhead) < 100);
+    if (existing) {
+      dispatch({
+        type: 'SET_CAMERA_KEYFRAMES',
+        keyframes: state.cameraKeyframes.map(k => k.id === existing.id ? { ...k, camera: { ...state.camera } } : k),
+      });
+      return;
     }
+    const keyframe = { id: uid('cam'), time: Math.round(playhead), camera: { ...state.camera }, easing: 'ease' as const };
+    dispatch({
+      type: 'SET_CAMERA_KEYFRAMES',
+      keyframes: [...state.cameraKeyframes, keyframe].sort((a, b) => a.time - b.time),
+    });
   };
 
   const handleToolCall = (name: string, args: any) => {
@@ -414,7 +419,6 @@ export default function App() {
                       isCinematic={state.isCinematic}
                       dofEnabled={state.dofEnabled}
                       playhead={playhead}
-                      activeEffect={activeEffect}
                       events={state.events}
                       displaySize={state.displaySize}
                       frame={state.frame}
@@ -424,32 +428,59 @@ export default function App() {
                       webcamUrl={state.webcamPath ? toFileUrl(state.webcamPath) : null}
                       webcam={state.webcam}
                       zoomRegions={state.zoomRegions}
+                      cameraKeyframes={state.cameraKeyframes}
+                      motionEffects={state.motionEffects}
                     />
                     
-                    <div className="absolute top-4 right-4 bg-neutral-900/60 p-3 rounded-lg border border-neutral-800/80 backdrop-blur text-xs flex flex-col gap-3">
-                      <div className="flex gap-4 items-center">
-                        <span className="text-blue-400 font-medium">Z</span>
-                        <div className="bg-neutral-950 border border-neutral-800 rounded px-3 py-1 w-20 text-center">{state.camera.position[2].toFixed(1)}</div>
+                    <div className="absolute top-4 right-4 max-h-[calc(100%-2rem)] overflow-y-auto bg-neutral-900/60 p-3 rounded-lg border border-neutral-800/80 backdrop-blur text-xs flex flex-col gap-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-neutral-400">Camera</span>
+                        <button
+                          onClick={handleAddKeyframe}
+                          title="Snapshot the current camera pose at the playhead"
+                          className="bg-fuchsia-600/20 text-fuchsia-300 border border-fuchsia-500/40 rounded px-2 py-0.5 hover:bg-fuchsia-600/30"
+                        >
+                          ◆ {state.cameraKeyframes.some(k => Math.abs(k.time - playhead) < 100) ? 'Update' : 'Keyframe'}
+                        </button>
                       </div>
-                      <div className="flex gap-4 items-center">
-                        <span className="text-green-400 font-medium">Y</span>
-                        <div className="bg-neutral-950 border border-neutral-800 rounded px-3 py-1 w-20 text-center">{state.camera.position[1].toFixed(1)}</div>
-                      </div>
-                      <div className="flex gap-4 items-center">
-                        <span className="text-red-400 font-medium">X</span>
-                        <div className="bg-neutral-950 border border-neutral-800 rounded px-3 py-1 w-20 text-center">{state.camera.position[0].toFixed(1)}</div>
-                      </div>
-                      <div className="flex gap-4 items-center">
-                        <span className="text-yellow-400 font-medium">Zoom</span>
-                        <div className="bg-neutral-950 border border-neutral-800 rounded px-3 py-1 w-20 text-center">{state.camera.zoom.toFixed(1)}</div>
-                      </div>
+                      <label className="flex items-center gap-2 text-neutral-400">
+                        <span className="w-3 text-red-400">X</span>
+                        <input type="range" min="-8" max="8" step="0.1" value={state.camera.position[0]}
+                          onChange={e => dispatch({ type: 'UPDATE_CAMERA', payload: { position: [Number(e.target.value), state.camera.position[1], state.camera.position[2]] } })}
+                          className="flex-1 accent-red-500" />
+                        <span className="w-9 text-right text-neutral-300">{state.camera.position[0].toFixed(1)}</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-neutral-400">
+                        <span className="w-3 text-green-400">Y</span>
+                        <input type="range" min="-4.5" max="4.5" step="0.1" value={state.camera.position[1]}
+                          onChange={e => dispatch({ type: 'UPDATE_CAMERA', payload: { position: [state.camera.position[0], Number(e.target.value), state.camera.position[2]] } })}
+                          className="flex-1 accent-green-500" />
+                        <span className="w-9 text-right text-neutral-300">{state.camera.position[1].toFixed(1)}</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-neutral-400">
+                        <span className="w-9 text-yellow-400">Zoom</span>
+                        <input type="range" min="0.5" max="3" step="0.05" value={state.camera.zoom}
+                          onChange={e => dispatch({ type: 'UPDATE_CAMERA', payload: { zoom: Number(e.target.value) } })}
+                          className="flex-1 accent-yellow-500" />
+                        <span className="w-9 text-right text-neutral-300">{state.camera.zoom.toFixed(2)}</span>
+                      </label>
                       <div className="pt-2 border-t border-neutral-800 flex justify-between items-center text-neutral-400">
-                         <span>Rotation</span>
-                         <div className="flex gap-2">
-                           <span className="bg-neutral-950 border border-neutral-800 rounded px-1.5 py-0.5">X {state.camera.rotation[0].toFixed(1)}°</span>
-                           <span className="bg-neutral-950 border border-neutral-800 rounded px-1.5 py-0.5">Y {state.camera.rotation[1].toFixed(1)}°</span>
-                           <span className="bg-neutral-950 border border-neutral-800 rounded px-1.5 py-0.5">Z {state.camera.rotation[2].toFixed(1)}°</span>
-                         </div>
+                        <span>Rotation</span>
+                        <span className="text-[10px] text-neutral-500">X / Y / Z</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {[0, 1, 2].map(i => (
+                          <input
+                            key={i}
+                            type="range" min="-0.6" max="0.6" step="0.02" value={state.camera.rotation[i]}
+                            onChange={e => {
+                              const rotation = [...state.camera.rotation] as [number, number, number];
+                              rotation[i] = Number(e.target.value);
+                              dispatch({ type: 'UPDATE_CAMERA', payload: { rotation } });
+                            }}
+                            className="w-full accent-purple-500"
+                          />
+                        ))}
                       </div>
                       <div className="pt-2 border-t border-neutral-800 space-y-2">
                         <div className="flex justify-between items-center gap-2">
@@ -567,6 +598,10 @@ export default function App() {
                   onAutoZoom={handleAutoZoom}
                   onTranscribe={handleTranscribe}
                   displaySize={state.displaySize}
+                  cameraKeyframes={state.cameraKeyframes}
+                  onCameraKeyframesChange={keyframes => dispatch({ type: 'SET_CAMERA_KEYFRAMES', keyframes })}
+                  motionEffects={state.motionEffects}
+                  onMotionEffectsChange={effects => dispatch({ type: 'SET_MOTION_EFFECTS', effects })}
                 />
               )}
             </>
@@ -585,7 +620,6 @@ export default function App() {
             cameraTransform: state.camera,
             isCinematic: state.isCinematic,
             dofEnabled: state.dofEnabled,
-            activeEffect: null,
             events: state.events,
             displaySize: state.displaySize,
             trim: state.trim,
@@ -596,6 +630,8 @@ export default function App() {
             frame: state.frame,
             webcam: state.webcam,
             webcamPath: state.webcamPath,
+            cameraKeyframes: state.cameraKeyframes,
+            motionEffects: state.motionEffects,
           }}
         />
       )}
