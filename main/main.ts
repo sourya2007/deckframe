@@ -3,10 +3,12 @@ import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
 import ffmpegStatic from 'ffmpeg-static';
-import { setupInputHook, stopInputHook } from './inputHook';
+import { setupInputHook, stopInputHook, pauseInputHook, resumeInputHook } from './inputHook';
 import { stopRecording } from './recorder';
 import { hideOsCursor, restoreOsCursor } from './cursorHider';
 import { encodeExport, probeVideoSize, killEncode } from './exporter';
+import { aiChat } from './ai';
+import { autoUpdater } from 'electron-updater';
 import {
   showSourceSelector, showCountdown, sendCountdownTick, sendHudTick,
   setHudPassthrough, showHud, closeOverlay, closeAllOverlays,
@@ -17,6 +19,8 @@ let isRecordingActive = false;
 let pendingSourceId: string | null = null;
 let countdownTimer: NodeJS.Timeout | null = null;
 let hudTimer: NodeJS.Timeout | null = null;
+let hudStartedAt = 0;
+let hudPausedAt: number | null = null;
 
 // Export session state (one export at a time — concurrent sessions would
 // interleave stream chunks on the shared IPC channels)
@@ -143,6 +147,14 @@ ipcMain.handle('begin-countdown', async () => {
 
 ipcMain.handle('hud-control', async (_e, action: string) => {
   diag(`hud-control ${action}`);
+  if (action === 'pause') {
+    hudPausedAt = Date.now();
+    pauseInputHook();
+  } else if (action === 'resume' && hudPausedAt !== null) {
+    hudStartedAt += Date.now() - hudPausedAt;
+    hudPausedAt = null;
+    resumeInputHook();
+  }
   mainWindow?.webContents.send('hud-control', action);
 });
 
@@ -175,8 +187,9 @@ ipcMain.handle('start-recording', async (_, sourceId: string) => {
     isRecordingActive = true;
     diag(`recording-start source=${sourceId}`);
     showHud();
-    const startedAt = Date.now();
-    hudTimer = setInterval(() => sendHudTick(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    hudStartedAt = Date.now();
+    hudPausedAt = null;
+    hudTimer = setInterval(() => sendHudTick(Math.floor((Date.now() - hudStartedAt) / 1000)), 1000);
     return startTime.toString();
   } catch (err) {
     console.error('Failed to start recording:', err);
@@ -191,6 +204,7 @@ ipcMain.handle('stop-recording', async (_, chunks: Uint8Array, micChunks?: Uint8
   }
   isRecordingActive = false;
   if (hudTimer) { clearInterval(hudTimer); hudTimer = null; }
+  hudPausedAt = null;
   closeOverlay('hud-overlay');
   const eventsPath = stopInputHook();
   try {
@@ -218,6 +232,34 @@ ipcMain.handle('load-events', async (_, filePath: string) => {
 
 // ---- .deckframe projects ----
 
+const autosavePath = () => path.join(app.getPath('userData'), 'autosave.deckframe');
+const recentProjectsPath = () => path.join(app.getPath('userData'), 'recent-projects.json');
+
+function readRecentProjects(): Array<{ path: string; name: string; savedAt: number }> {
+  try {
+    const list = JSON.parse(fs.readFileSync(recentProjectsPath(), 'utf-8'));
+    return Array.isArray(list) ? list.filter(r => r && typeof r.path === 'string') : [];
+  } catch { return []; }
+}
+
+function addRecentProject(filePath: string) {
+  const list = readRecentProjects().filter(r => r.path !== filePath);
+  list.unshift({ path: filePath, name: path.basename(filePath), savedAt: Date.now() });
+  try {
+    fs.writeFileSync(recentProjectsPath(), JSON.stringify(list.slice(0, 10), null, 2));
+  } catch { /* recent list is best-effort */ }
+}
+
+function readProjectFile(filePath: string) {
+  if (!filePath || path.extname(filePath).toLowerCase() !== '.deckframe') {
+    throw new Error('Not a DeckFrame project file.');
+  }
+  const data = fs.readFileSync(filePath, 'utf-8');
+  addRecentProject(filePath);
+  diag(`project-open ${filePath}`);
+  return { filePath, project: JSON.parse(data) };
+}
+
 ipcMain.handle('save-project', async (_e, projectJson: string) => {
   const result = await dialog.showSaveDialog(mainWindow!, {
     defaultPath: 'untitled.deckframe',
@@ -225,6 +267,7 @@ ipcMain.handle('save-project', async (_e, projectJson: string) => {
   });
   if (result.canceled || !result.filePath) return null;
   fs.writeFileSync(result.filePath, projectJson);
+  addRecentProject(result.filePath);
   diag(`project-save ${result.filePath}`);
   return result.filePath;
 });
@@ -235,15 +278,37 @@ ipcMain.handle('open-project', async () => {
     properties: ['openFile'],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
-  const filePath = result.filePaths[0];
   try {
-    const data = fs.readFileSync(filePath, 'utf-8');
-    diag(`project-open ${filePath}`);
-    return { filePath, project: JSON.parse(data) };
+    return readProjectFile(result.filePaths[0]);
   } catch (err) {
     console.error('Failed to open project:', err);
     throw new Error('Could not open project file.');
   }
+});
+
+ipcMain.handle('open-project-path', async (_e, filePath: string) => {
+  try {
+    return readProjectFile(filePath);
+  } catch (err) {
+    console.error('Failed to open recent project:', err);
+    throw new Error('Could not open project file.');
+  }
+});
+
+ipcMain.handle('get-recent-projects', async () => readRecentProjects());
+
+ipcMain.handle('autosave-project', async (_e, projectJson: string) => {
+  try {
+    fs.writeFileSync(autosavePath(), projectJson);
+    return true;
+  } catch { return false; }
+});
+
+ipcMain.handle('load-autosave', async () => {
+  try {
+    const project = JSON.parse(fs.readFileSync(autosavePath(), 'utf-8'));
+    return { project, savedAt: fs.statSync(autosavePath()).mtimeMs };
+  } catch { return null; }
 });
 
 // ---- captions (whisper via OpenAI key from settings) ----
@@ -286,6 +351,14 @@ ipcMain.handle('transcribe-audio', async (_e, audioPath: string) => {
   }
 });
 
+// ---- AI assistant (tool calls are applied by the renderer) ----
+ipcMain.handle('ai-chat', async (_e, payload: { system?: string; messages?: any[] }) => {
+  const system = typeof payload?.system === 'string' ? payload.system.slice(0, 12000) : '';
+  const messages = (Array.isArray(payload?.messages) ? payload.messages : [])
+    .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string');
+  return aiChat(userSettings(), system, messages);
+});
+
 const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
 
 ipcMain.handle('load-settings', async () => {
@@ -298,6 +371,15 @@ ipcMain.handle('load-settings', async () => {
 ipcMain.handle('save-settings', async (_, settings: any) => {
   fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
   return true;
+});
+
+ipcMain.handle('check-for-updates', async (_e) => {
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    return { ok: true, version: result?.updateInfo?.version ?? null };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Update check failed.' };
+  }
 });
 
 ipcMain.handle('scan-audio-files', async (_, dirPath: string) => {

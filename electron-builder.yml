@@ -1,5 +1,6 @@
 appId: com.deckframe.app
 productName: DeckFrame
+npmRebuild: false
 directories:
   output: release/
 files:

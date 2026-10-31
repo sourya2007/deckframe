@@ -23,6 +23,7 @@ interface Viewport3DProps {
   // MediaRecorder), play at its own rate (freeRun), and expose the canvas
   externalVideo?: HTMLVideoElement | null;
   freeRun?: boolean;
+  paused?: boolean;
   onCanvas?: (canvas: HTMLCanvasElement) => void;
   // phase 3 overlays
   events?: InteractionEvent[];
@@ -60,8 +61,8 @@ function useCanvasTexture(draw: (ctx: CanvasRenderingContext2D, w: number, h: nu
   }, deps);
 }
 
-function VideoPlane({ url, playhead, externalVideo, freeRun, scale, rounded, playbackRate, crop }: {
-  url: string | null; playhead: number; externalVideo?: HTMLVideoElement | null; freeRun?: boolean;
+function VideoPlane({ url, playhead, externalVideo, freeRun, paused, scale, rounded, playbackRate, crop }: {
+  url: string | null; playhead: number; externalVideo?: HTMLVideoElement | null; freeRun?: boolean; paused?: boolean;
   scale: number; rounded: boolean; playbackRate?: number; crop: Crop;
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -115,6 +116,13 @@ function VideoPlane({ url, playhead, externalVideo, freeRun, scale, rounded, pla
       texture.dispose();
     };
   }, [url, externalVideo]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || freeRun) return; // export window: video plays on its own clock
+    if (paused) video.pause();
+    else video.play().catch(() => { /* autoplay may be blocked */ });
+  }, [paused, freeRun, url]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -319,8 +327,8 @@ function CaptionMesh({ cap, vs }: { cap: Caption; vs: number }) {
   );
 }
 
-function WebcamBubble({ url, style, playhead, freeRun, vs, syncVideo }: {
-  url: string; style: WebcamStyle; playhead: number; freeRun?: boolean; vs: number;
+function WebcamBubble({ url, style, playhead, freeRun, paused, vs, syncVideo }: {
+  url: string; style: WebcamStyle; playhead: number; freeRun?: boolean; paused?: boolean; vs: number;
   syncVideo?: HTMLVideoElement | null;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -345,6 +353,13 @@ function WebcamBubble({ url, style, playhead, freeRun, vs, syncVideo }: {
     setTex(t);
     return () => { video.pause(); t.dispose(); };
   }, [url]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || freeRun) return;
+    if (paused) video.pause();
+    else video.play().catch(() => { /* autoplay may be blocked */ });
+  }, [paused, freeRun, url]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -419,7 +434,7 @@ export function Viewport3D({
   videoUrl, cameraTransform, isCinematic, dofEnabled, playhead,
   externalVideo, freeRun, onCanvas,
   events, displaySize, frame, annotations, captions, playbackRate, webcamUrl, webcam, zoomRegions,
-  cameraKeyframes, motionEffects,
+  cameraKeyframes, motionEffects, paused,
 }: Viewport3DProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -473,6 +488,7 @@ export function Viewport3D({
           playhead={playhead}
           externalVideo={externalVideo}
           freeRun={freeRun}
+          paused={paused}
           scale={vs}
           rounded={!!frame?.rounded && showFrame}
           playbackRate={playbackRate}
@@ -482,7 +498,7 @@ export function Viewport3D({
         {showCursor && <CursorOverlay events={events!} display={displaySize!} playhead={playhead} vs={vs} crop={crop} />}
         {showAnnotations && <AnnotationLayer annotations={annotations!} playhead={playhead} vs={vs} crop={crop} />}
         {showCaptions && <CaptionLayer captions={captions!} playhead={playhead} vs={vs} />}
-        {showWebcam && <WebcamBubble url={webcamUrl!} style={webcam!} playhead={playhead} freeRun={freeRun} vs={vs} syncVideo={externalVideo} />}
+        {showWebcam && <WebcamBubble url={webcamUrl!} style={webcam!} playhead={playhead} freeRun={freeRun} paused={paused} vs={vs} syncVideo={externalVideo} />}
 
         {motion.fadeOpacity > 0.001 && (
           <mesh position={[0, 0, 0.6]}>

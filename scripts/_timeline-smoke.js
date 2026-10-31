@@ -1,10 +1,11 @@
 // Assert-based self-check for the pure timeline math shared by editor + export.
 // Run: node scripts/_timeline-smoke.js <path-to-compiled-timeline.js>
 const assert = require('assert');
+const path = require('path');
 const {
   cursorAt, speedAt, cropAt, cropMap, autoZoomRegions, activeCaption, activeAnnotations, activeRipples, toNormalized,
-  cameraAtTime, motionAt,
-} = require(process.argv[2]);
+  cameraAtTime, motionAt, splitRanges,
+} = require(path.resolve(process.argv[2]));
 
 const display = { width: 1920, height: 1080, x: 0, y: 0 };
 
@@ -27,6 +28,16 @@ assert.strictEqual(activeRipples(events, display, 1500).length, 0);
 const speed = [{ id: 's', start: 1000, end: 2000, rate: 2 }];
 assert.strictEqual(speedAt(speed, 1500), 2);
 assert.strictEqual(speedAt(speed, 2500), 1);
+
+// razor splits a range in two, preserving each half's bounds
+const razor = splitRanges([{ id: 'z', start: 1000, end: 3000, scale: 2 }], 2000);
+assert.strictEqual(razor.length, 2);
+assert.deepStrictEqual(razor.map(r => [r.start, r.end]), [[1000, 2000], [2000, 3000]]);
+assert.notStrictEqual(razor[0].id, razor[1].id);
+assert.strictEqual(razor[0].scale, 2);
+// slivers and clicks outside the range are left alone
+assert.strictEqual(splitRanges([{ id: 'z', start: 1000, end: 3000 }], 1050).length, 1);
+assert.strictEqual(splitRanges([{ id: 'z', start: 1000, end: 3000 }], 500).length, 1);
 
 // zoom regions crop the video texture inside its frame — overlays stay fixed
 const centered = [{ id: 'z', start: 1000, end: 3000, scale: 2, centerX: 0.5, centerY: 0.5 }];

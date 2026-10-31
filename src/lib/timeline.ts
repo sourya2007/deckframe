@@ -56,6 +56,17 @@ export function speedAt(regions: SpeedRegion[], t: number): number {
   return 1;
 }
 
+// razor: split every range crossing `at`; slivers under 100ms are left whole
+export function splitRanges<T extends { id: string; start: number; end: number }>(items: T[], at: number): T[] {
+  return items.flatMap(r => {
+    if (at <= r.start + 100 || at >= r.end - 100) return [r];
+    return [
+      { ...r, id: `${r.id}-a-${Math.round(at)}`, end: at },
+      { ...r, id: `${r.id}-b-${Math.round(at)}`, start: at },
+    ];
+  });
+}
+
 const ease = (x: number) => x * x * (3 - 2 * x); // smoothstep
 
 // Zoom regions crop the video inside its frame instead of moving the camera —

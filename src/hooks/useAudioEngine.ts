@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { InteractionEvent } from '../types/project';
+import { InteractionEvent, SoundEffect } from '../types/project';
+
+const toFileUrl = (p: string) => 'file:///' + p.replace(/\\/g, '/');
 
 function disposeNodes(osc: OscillatorNode, gain: GainNode) {
   osc.onended = () => {
@@ -66,8 +68,10 @@ function playProceduralSound(ctx: AudioContext, type: string, isDown: boolean) {
   }
 }
 
-export function useAudioEngine(events: InteractionEvent[], playhead: number) {
+export function useAudioEngine(events: InteractionEvent[], playhead: number, soundEffects: SoundEffect[] = []) {
   const playedKeys = useRef<Set<string>>(new Set());
+  const playedSfx = useRef<Set<string>>(new Set());
+  const sfxAudios = useRef<HTMLAudioElement[]>([]);
   const synthRef = useRef<AudioContext | null>(null);
   // move telemetry is 20/s — never a sound, and filtering once keeps the loop cheap
   const actionable = useMemo(() => events.filter(e => e.type !== 'move'), [events]);
@@ -76,25 +80,59 @@ export function useAudioEngine(events: InteractionEvent[], playhead: number) {
     synthRef.current = new AudioContext();
     return () => {
       synthRef.current?.close();
+      sfxAudios.current.forEach(a => a.pause());
+      sfxAudios.current = [];
     };
   }, []);
 
+  const prevPlayheadRef = useRef(playhead);
   useEffect(() => {
-    if (!synthRef.current) return;
+    const prev = prevPlayheadRef.current;
+    prevPlayheadRef.current = playhead;
+    const jumped = Math.abs(playhead - prev) > 500;
+    if (jumped) playedKeys.current.clear();
+
     const ctx = synthRef.current;
+    if (!ctx) return;
 
     actionable.forEach((e, i) => {
       const key = `${i}-${e.timestamp}-${e.type}`;
-      if (e.timestamp <= playhead && !playedKeys.current.has(key)) {
-        playedKeys.current.add(key);
-        playProceduralSound(ctx, e.type, e.details.state === 'down');
-      }
+      if (playedKeys.current.has(key)) return;
+      // after a seek only fire sounds near the new playhead, not the whole
+      // history behind it (that used to burst on every scrub)
+      const due = jumped
+        ? e.timestamp <= playhead && e.timestamp > playhead - 200
+        : e.timestamp >= prev && e.timestamp <= playhead;
+      if (!due) return;
+      playedKeys.current.add(key);
+      playProceduralSound(ctx, e.type, e.details.state === 'down');
     });
-
-    if (playhead === 0) {
-      playedKeys.current.clear();
-    }
   }, [playhead, actionable]);
+
+  // library SFX play through HTMLAudioElements so any codec Chromium supports works
+  const prevSfxPlayheadRef = useRef(playhead);
+  useEffect(() => {
+    const prev = prevSfxPlayheadRef.current;
+    prevSfxPlayheadRef.current = playhead;
+    const jumped = Math.abs(playhead - prev) > 500;
+    if (jumped) playedSfx.current.clear();
+
+    for (const sfx of soundEffects) {
+      if (!sfx.path || playedSfx.current.has(sfx.id)) continue;
+      const due = jumped
+        ? sfx.timestamp <= playhead && sfx.timestamp > playhead - 200
+        : sfx.timestamp >= prev && sfx.timestamp <= playhead;
+      if (!due) continue;
+      playedSfx.current.add(sfx.id);
+      const audio = new Audio(toFileUrl(sfx.path));
+      audio.volume = Math.max(0, Math.min(1, sfx.volume ?? 1));
+      audio.play().catch(() => { /* missing file — keep editing */ });
+      sfxAudios.current.push(audio);
+      audio.addEventListener('ended', () => {
+        sfxAudios.current = sfxAudios.current.filter(a => a !== audio);
+      }, { once: true });
+    }
+  }, [playhead, soundEffects]);
 
   return {};
 }

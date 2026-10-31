@@ -3,7 +3,7 @@ import {Viewport3D} from '../components/Viewport3D';
 import {speedAt} from '../lib/timeline';
 import type {
   CameraTransform, InteractionEvent, ZoomRegion, SpeedRegion, Annotation, Caption, FrameStyle, WebcamStyle,
-  CameraKeyframe, MotionEffect,
+  CameraKeyframe, MotionEffect, SoundEffect,
 } from '../types/project';
 
 // Hidden export window: plays the recording through the shared 3D scene,
@@ -29,6 +29,7 @@ interface ExportScene {
   webcamPath?: string | null;
   cameraKeyframes?: CameraKeyframe[];
   motionEffects?: MotionEffect[];
+  soundEffects?: SoundEffect[];
 }
 
 const toFileUrl = (p: string) => 'file:///' + p.replace(/\\/g, '/');
@@ -119,8 +120,34 @@ export function ExportRunner() {
         }
         video.playbackRate = speedAt(loaded.speedRegions ?? [], startMs);
 
+        // library SFX are mixed into the same destination stream as the video
+        // audio; real-time playback matches the source clock used by timestamps
+        const sfxPlayers: Array<{ at: number; played: boolean; audio: HTMLAudioElement }> = [];
+        for (const fx of loaded.soundEffects ?? []) {
+          if (!fx.path || fx.timestamp < startMs - 200 || fx.timestamp > endMs) continue;
+          try {
+            const audio = document.createElement('audio');
+            audio.src = toFileUrl(fx.path);
+            audio.volume = Math.max(0, Math.min(1, fx.volume ?? 1));
+            audioCtx.createMediaElementSource(audio).connect(dest);
+            sfxPlayers.push({ at: fx.timestamp, played: false, audio });
+          } catch { /* unreadable effect — export continues */ }
+        }
+        const sfxTimer = setInterval(() => {
+          const t = video.currentTime * 1000;
+          for (const player of sfxPlayers) {
+            if (!player.played && t >= player.at) {
+              player.played = true;
+              player.audio.currentTime = 0;
+              player.audio.play().catch(() => { /* keep rendering */ });
+            }
+          }
+        }, 100);
+
         const stopPlayback = () => {
           video.pause();
+          for (const player of sfxPlayers) player.audio.pause();
+          clearInterval(sfxTimer);
           if (recorder.state !== 'inactive') recorder.stop();
         };
 

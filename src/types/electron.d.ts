@@ -23,6 +23,17 @@ export interface LoadedProject {
   project: any;   // ProjectState JSON — shape validated by the renderer
 }
 
+export interface RecentProject {
+  path: string;
+  name: string;
+  savedAt: number;
+}
+
+export interface AiChatReply {
+  text: string;
+  toolCalls: Array<{ name: string; args: Record<string, any> }>;
+}
+
 export interface ElectronAPI {
   // recording
   getSources: (thumbnails?: boolean) => Promise<SourceInfo[]>;
@@ -59,16 +70,24 @@ export interface ElectronAPI {
   // projects
   saveProject: (projectJson: string) => Promise<string | null>;
   openProject: () => Promise<LoadedProject | null>;
+  openProjectPath: (filePath: string) => Promise<LoadedProject | null>;
+  getRecentProjects: () => Promise<RecentProject[]>;
+  autosaveProject: (projectJson: string) => Promise<boolean>;
+  loadAutosave: () => Promise<{ project: any; savedAt: number } | null>;
   filePathForFile: (file: File) => string;
 
   // captions
   transcribeAudio: (audioPath: string) => Promise<CaptionCue[]>;
+
+  // ai assistant
+  aiChat: (payload: { system: string; messages: Array<{ role: 'user' | 'assistant'; content: string }> }) => Promise<AiChatReply>;
 
   // settings / misc
   saveSettings: (settings: any) => Promise<boolean>;
   loadSettings: () => Promise<any>;
   selectDirectory: () => Promise<string | null>;
   scanAudioFiles: (dirPath: string) => Promise<{ name: string; path: string }[]>;
+  checkForUpdates: () => Promise<{ ok: boolean; version?: string | null; error?: string }>;
 }
 
 declare global {

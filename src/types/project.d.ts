@@ -10,6 +10,7 @@ export interface SoundEffect {
   trackType: string;
   volume: number;
   timestamp: number;
+  path?: string;      // library file; absent = label-only legacy effect
 }
 
 export interface CameraTransform {

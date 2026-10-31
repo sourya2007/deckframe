@@ -31,6 +31,9 @@ interface VideoTimelineProps {
   onCameraKeyframesChange?: (keyframes: CameraKeyframe[]) => void;
   motionEffects: MotionEffect[];
   onMotionEffectsChange?: (effects: MotionEffect[]) => void;
+  // move = drag clips / pan preview, cut = razor at click
+  tool?: 'select' | 'move' | 'cut';
+  onRazor?: (time: number) => void;
 }
 
 function formatTime(ms: number): string {
@@ -63,6 +66,7 @@ export function VideoTimeline({
   speedRegions, onSpeedRegionsChange, annotations, onAnnotationsChange,
   captions, onCaptionsChange, onAutoZoom, onTranscribe, displaySize,
   cameraKeyframes, onCameraKeyframesChange, motionEffects, onMotionEffectsChange,
+  tool = 'select', onRazor,
 }: VideoTimelineProps) {
   const tracksRef = useRef<HTMLDivElement>(null);
   const draggingIdRef = useRef<string | null>(null);
@@ -86,6 +90,7 @@ export function VideoTimeline({
     mode: 'move' | 'l' | 'r',
     commit: (start: number, end: number) => void,
   ) => {
+    if (tool === 'cut') return; // razor mode: let the click reach the tracks handler
     e.stopPropagation();
     e.preventDefault();
     const t0 = timeFromMouse(e);
@@ -112,6 +117,7 @@ export function VideoTimeline({
   };
 
   const handleSfxMouseDown = (e: React.MouseEvent, sfx: SoundEffect) => {
+    if (tool === 'cut') return;
     e.stopPropagation();
     e.preventDefault();
     draggingIdRef.current = sfx.id;
@@ -135,6 +141,7 @@ export function VideoTimeline({
   };
 
   const startTrimDrag = (edge: 'start' | 'end') => (e: React.MouseEvent) => {
+    if (tool === 'cut') return;
     e.stopPropagation();
     e.preventDefault();
     const move = (ev: MouseEvent) => {
@@ -172,6 +179,12 @@ export function VideoTimeline({
     setSelection(null);
   };
 
+  const handleTimelineClick = (e: React.MouseEvent) => {
+    const t = timeFromMouse(e);
+    onSeek(t);
+    if (tool === 'cut') onRazor?.(t);
+  };
+
   // shared bar renderer for range-type regions
   const regionBar = (
     region: { id: string; start: number; end: number },
@@ -182,12 +195,13 @@ export function VideoTimeline({
   ) => (
     <div
       key={region.id}
-      className={`absolute top-1/2 -translate-y-1/2 h-5 rounded border cursor-grab select-none text-[9px] flex items-center overflow-hidden ${color} ${selection?.id === region.id ? 'ring-1 ring-white' : ''}`}
+      className={`absolute top-1/2 -translate-y-1/2 h-5 rounded border select-none text-[9px] flex items-center overflow-hidden ${tool === 'cut' ? 'cursor-crosshair' : 'cursor-grab'} ${color} ${selection?.id === region.id ? 'ring-1 ring-white' : ''}`}
       style={{
         left: `${duration > 0 ? (region.start / duration) * 100 : 0}%`,
         width: `${duration > 0 ? ((region.end - region.start) / duration) * 100 : 0}%`,
       }}
       onMouseDown={(e) => { setSelection({ kind, id: region.id }); startRegionDrag(e, region, 'move', commit); }}
+      onClick={e => { if (tool !== 'cut') e.stopPropagation(); }}
       onDoubleClick={(e) => { e.stopPropagation(); commit(region.start, region.end); /* no-op keeps signature */ setSelection({ kind, id: region.id }); }}
     >
       <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize hover:bg-white/30" onMouseDown={(e) => startRegionDrag(e, region, 'l', commit)} />
@@ -219,8 +233,9 @@ export function VideoTimeline({
           <button onClick={onTranscribe} title="Transcribe audio (needs OpenAI key in Settings)" className="hover:text-white px-2 py-1 rounded hover:bg-neutral-800">🎙 Transcribe</button>
         </div>
         <div className="flex items-center gap-4 text-neutral-400">
+          {tool === 'cut' && <span className="text-rose-300 text-[10px]">Cut tool — click the timeline to split clips at that point</span>}
+          {tool === 'move' && <span className="text-neutral-500 text-[10px]">Move tool — drag clips, or drag the preview to pan the camera</span>}
           {currentSpeed !== 1 && <span className="text-emerald-400">{currentSpeed}x</span>}
-          <button className="hover:text-white"><svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" strokeWidth="2"></line></svg></button>
         </div>
       </div>
 
@@ -236,7 +251,7 @@ export function VideoTimeline({
         <div className="flex-1 relative overflow-x-auto bg-[#131316]">
           <div
             className="h-6 border-b border-neutral-800 bg-[#0E0E11] flex items-end text-[10px] text-neutral-500 overflow-hidden select-none sticky top-0 z-10"
-            onClick={(e) => onSeek(timeFromMouse(e))}
+            onClick={handleTimelineClick}
           >
             <div className="w-full flex justify-between">
               {rulerTicks.map((t, i) => (
@@ -248,7 +263,7 @@ export function VideoTimeline({
           <div
             ref={tracksRef}
             className="relative h-[calc(100%-24px)]"
-            onClick={(e) => onSeek(timeFromMouse(e))}
+            onClick={handleTimelineClick}
           >
             {/* trim shading + handles */}
             {trimActive && (
@@ -345,6 +360,7 @@ export function VideoTimeline({
                       className="absolute top-1/2 -translate-y-1/2 h-5 bg-amber-700/80 rounded border border-amber-600/80 px-1 flex items-center cursor-grab select-none text-[9px]"
                       style={{ left: `${duration > 0 ? (ts / duration) * 100 : 0}%` }}
                       onMouseDown={(e) => handleSfxMouseDown(e, sfx)}
+                      onClick={e => { if (tool !== 'cut') e.stopPropagation(); }}
                       onDoubleClick={() => onRemoveSoundEffect?.(sfx.id)}
                     >
                       {sfx.trackType}
@@ -357,7 +373,10 @@ export function VideoTimeline({
 
           {/* selection inspector */}
           {selection && selected && (
-            <div className="absolute top-8 right-4 z-30 bg-[#1C1C1F] border border-neutral-700 rounded-lg p-3 w-64 shadow-xl space-y-2 text-neutral-300">
+            <div
+              className="absolute top-8 right-4 z-30 bg-[#1C1C1F] border border-neutral-700 rounded-lg p-3 w-64 shadow-xl space-y-2 text-neutral-300"
+              onClick={e => e.stopPropagation()}
+            >
               <div className="flex justify-between items-center">
                 <span className="font-medium capitalize text-white">{selection.kind}</span>
                 <div className="flex gap-2">

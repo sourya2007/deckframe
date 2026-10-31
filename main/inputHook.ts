@@ -7,6 +7,7 @@ let events: any[] = [];
 let isRecording = false;
 let uiohook: any = null;
 let lastMoveAt = 0;
+let pausedAt: bigint | null = null;
 
 async function ensureUiohook() {
   if (uiohook) return uiohook;
@@ -41,7 +42,7 @@ export async function setupInputHook(startTick: bigint, onEvent?: (ev: any) => v
   isRecording = true;
 
   const emit = (ev: any) => {
-    if (!isRecording) return;
+    if (!isRecording || pausedAt) return;
     onEvent?.(ev);
     events.push(ev);
   };
@@ -105,9 +106,23 @@ export async function setupInputHook(startTick: bigint, onEvent?: (ev: any) => v
   }
 }
 
+// Paused media time stops; timestamps must stop too, otherwise every event
+// after resume is offset by the pause duration.
+export function pauseInputHook() {
+  if (!isRecording || pausedAt) return;
+  pausedAt = process.hrtime.bigint();
+}
+
+export function resumeInputHook() {
+  if (!isRecording || !pausedAt || !startTime) return;
+  startTime += process.hrtime.bigint() - pausedAt;
+  pausedAt = null;
+}
+
 export function stopInputHook(): string | null {
   if (!isRecording) return null;
   isRecording = false;
+  pausedAt = null;
   try { uiohook?.uIOhook.stop(); } catch { /* ok */ }
   const ts = Date.now();
   const outputPath = path.join(app.getPath('userData'), `events-${ts}.json`);

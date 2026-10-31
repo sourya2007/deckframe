@@ -17,11 +17,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // projects
   saveProject: (projectJson: string) => ipcRenderer.invoke('save-project', projectJson),
   openProject: () => ipcRenderer.invoke('open-project'),
+  openProjectPath: (filePath: string) => ipcRenderer.invoke('open-project-path', filePath),
+  getRecentProjects: () => ipcRenderer.invoke('get-recent-projects'),
+  autosaveProject: (projectJson: string) => ipcRenderer.invoke('autosave-project', projectJson),
+  loadAutosave: () => ipcRenderer.invoke('load-autosave'),
   // resolve an imported File to its real path (project files need stable paths)
   filePathForFile: (file: File) => webUtils.getPathForFile(file),
 
   // captions
   transcribeAudio: (audioPath: string) => ipcRenderer.invoke('transcribe-audio', audioPath),
+
+  // ai assistant
+  aiChat: (payload: { system: string; messages: Array<{ role: 'user' | 'assistant'; content: string }> }) =>
+    ipcRenderer.invoke('ai-chat', payload),
 
   // capture flow (main window)
   showSourceSelector: () => ipcRenderer.invoke('show-source-selector'),
@@ -54,4 +62,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadSettings: () => ipcRenderer.invoke('load-settings'),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   scanAudioFiles: (dirPath: string) => ipcRenderer.invoke('scan-audio-files', dirPath),
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
 });

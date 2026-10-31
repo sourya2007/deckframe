@@ -14,7 +14,7 @@ export function ExportModal({ onClose, videoPath, micPath, events, duration, sce
   const [format, setFormat] = useState('mp4');
   const [resolution, setResolution] = useState('source');
   const [quality, setQuality] = useState(80);
-  const [destPath, setDestPath] = useState('C:\\Users\\Admin\\Videos\\DeckFrame_Proj');
+  const [destPath, setDestPath] = useState('');
   const [gifFps, setGifFps] = useState(12);
   const [gifWidth, setGifWidth] = useState(1280);
   const [gifLoopForever, setGifLoopForever] = useState(true);
@@ -23,9 +23,22 @@ export function ExportModal({ onClose, videoPath, micPath, events, duration, sce
   const [status, setStatus] = useState('');
   const [outPath, setOutPath] = useState<string | null>(null);
 
+  // load export path from settings on mount
+  useEffect(() => {
+    (async () => {
+      const saved = await window.electronAPI?.loadSettings?.();
+      if (saved?.exportPath) {
+        setDestPath(saved.exportPath);
+      } else if (!destPath) {
+        // fallback to default Windows path if settings missing or empty
+        setDestPath('C:\\Users\\Admin\\Videos\\DeckFrame_Proj');
+      }
+    })();
+  }, []);
+
   useEffect(() => {
     if (!rendering) return;
-    const unsub = window.electronAPI?.onExportProgress((pct: number) => {
+    const unsub = window.electronAPI?.onExportProgress?.((pct: number) => {
       setProgress(pct);
       setStatus(pct < 85 ? 'Rendering scene…' : pct < 100 ? 'Encoding…' : 'Complete');
     });
@@ -47,6 +60,8 @@ export function ExportModal({ onClose, videoPath, micPath, events, duration, sce
         gifFps, gifWidth, gifLoopForever, events, duration, videoPath, scene,
       });
       setOutPath(result?.outPath ?? null);
+      setProgress(100);
+      setRendering(false);
       setStatus('Complete');
     } catch (e: any) {
       if (e?.message !== 'cancelled') alert(`Export failed: ${e.message}`);

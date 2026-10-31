@@ -11,13 +11,16 @@ import { EffectsView } from './components/EffectsView';
 import { AudioLibraryView } from './components/AudioLibraryView';
 import { ExportModal } from './components/ExportModal';
 import { EmptyStateView } from './components/EmptyStateView';
-import { autoZoomRegions, speedAt, uid } from './lib/timeline';
+import { TransportBar } from './components/TransportBar';
+import { autoZoomRegions, speedAt, splitRanges, uid } from './lib/timeline';
+import { applyAiToolCalls } from './lib/aiActions';
+import type { AiToolCall } from './lib/aiActions';
 import type { FrameStyle, WebcamStyle, MotionEffectType } from './types/project';
 
 const toFileUrl = (p: string) => 'file:///' + p.replace(/\\/g, '/');
 
 export default function App() {
-  const [state, dispatch] = useProjectState();
+  const { state, dispatch, undo, redo, canUndo, canRedo } = useProjectState();
   const [activeTab, setActiveTab] = useState('project');
   const [showExport, setShowExport] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -40,10 +43,40 @@ export default function App() {
   webcamEnabledRef.current = state.webcam.enabled;
   const playbackRef = useRef({ trim: state.trim, speedRegions: state.speedRegions });
   playbackRef.current = { trim: state.trim, speedRegions: state.speedRegions };
+  // freeze playback on the AI tab so "here" has a stable playhead to edit
+  const aiPausedRef = useRef(false);
+  const [manualPaused, setManualPaused] = useState(false);
+  aiPausedRef.current = activeTab === 'ai';
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const electronAPI = window.electronAPI;
 
-  useAudioEngine(state.events, playhead);
+  useAudioEngine(state.events, playhead, state.soundEffects);
+
+  // crash recovery: restore the last autosave once on launch
+  const autosaveLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!electronAPI?.loadAutosave || autosaveLoadedRef.current) return;
+    autosaveLoadedRef.current = true;
+    (async () => {
+      const saved = await electronAPI.loadAutosave!();
+      const project = saved?.project;
+      if (project?.videoPath) {
+        dispatch({ type: 'SET_PROJECT', project: { ...project, videoUrl: toFileUrl(project.videoPath) } });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // debounced autosave so an unexpected close loses at most a couple of seconds
+  useEffect(() => {
+    if (!electronAPI?.autosaveProject || !state.videoPath) return;
+    const id = setTimeout(() => {
+      electronAPI.autosaveProject!(JSON.stringify({ ...state, videoUrl: null }));
+    }, 2500);
+    return () => clearTimeout(id);
+  }, [state]);
 
   useEffect(() => {
     if (duration <= 0) return;
@@ -53,15 +86,17 @@ export default function App() {
     const loop = (time: number) => {
       const delta = time - lastTime;
       lastTime = time;
-      setPlayhead(p => {
-        const { trim, speedRegions } = playbackRef.current;
-        const end = trim.end > 0 ? Math.min(trim.end, duration) : duration;
-        const start = Math.max(0, trim.start);
-        // speed regions re-time playback: 2x region advances the source twice as fast
-        const next = p + delta * speedAt(speedRegions, p);
-        if (p < start || next >= end) return start;
-        return next;
-      });
+      if (!aiPausedRef.current && !manualPaused) {
+        setPlayhead(p => {
+          const { trim, speedRegions } = playbackRef.current;
+          const end = trim.end > 0 ? Math.min(trim.end, duration) : duration;
+          const start = Math.max(0, trim.start);
+          // speed regions re-time playback: 2x region advances the source twice as fast
+          const next = p + delta * speedAt(speedRegions, p);
+          if (p < start || next >= end) return start;
+          return next;
+        });
+      }
       animationFrameId = requestAnimationFrame(loop);
     };
 
@@ -329,17 +364,37 @@ export default function App() {
     }
   };
 
+  const handleOpenRecent = async (filePath: string) => {
+    if (!electronAPI?.openProjectPath) return;
+    try {
+      const loaded = await electronAPI.openProjectPath(filePath);
+      if (!loaded) return;
+      const p = loaded.project ?? {};
+      dispatch({
+        type: 'SET_PROJECT',
+        project: { ...p, videoUrl: p.videoPath ? toFileUrl(p.videoPath) : null },
+      });
+      setPlayhead(0);
+    } catch (err: any) {
+      alert(`Open failed: ${err.message}`);
+    }
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       const key = e.key.toLowerCase();
+      const target = e.target as HTMLElement | null;
+      const typing = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
       if (key === 's') { e.preventDefault(); handleSaveProject(); }
       else if (key === 'o') { e.preventDefault(); handleOpenProject(); }
+      else if (!typing && key === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+      else if (!typing && key === 'y') { e.preventDefault(); redo(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state]);
+  }, [state, undo, redo]);
 
   const handleEffectSelect = (type: MotionEffectType) => {
     dispatch({
@@ -371,54 +426,104 @@ export default function App() {
     });
   };
 
-  const handleToolCall = (name: string, args: any) => {
-    if (name === 'applyCinematicTilt') {
-      dispatch({ type: 'SET_MODE', isCinematic: true });
-      dispatch({ 
-        type: 'UPDATE_CAMERA', 
-        payload: { rotation: [args.pitch, args.yaw, args.roll] } 
-      });
-    } else if (name === 'zoomToEvent') {
-      dispatch({
-        type: 'UPDATE_CAMERA',
-        payload: { zoom: args.zoomFactor }
-      });
-    } else if (name === 'addSoundEffect') {
-      dispatch({
-        type: 'ADD_SOUND_EFFECT',
-        effect: {
-          id: `sfx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          trackType: args.trackType || 'whoosh',
-          volume: args.volume ?? 0.5,
-          timestamp: args.timestamp ?? playhead,
-        }
-      });
-    }
+  // one razor click = one undo step, so split every track in a single dispatch
+  const handleRazor = (time: number) => {
+    const current = stateRef.current;
+    const next = {
+      ...current,
+      zoomRegions: splitRanges(current.zoomRegions, time),
+      speedRegions: splitRanges(current.speedRegions, time),
+      motionEffects: splitRanges(current.motionEffects, time),
+      annotations: splitRanges(current.annotations, time),
+      captions: splitRanges(current.captions, time),
+    };
+    const changed = next.zoomRegions.length !== current.zoomRegions.length
+      || next.speedRegions.length !== current.speedRegions.length
+      || next.motionEffects.length !== current.motionEffects.length
+      || next.annotations.length !== current.annotations.length
+      || next.captions.length !== current.captions.length;
+    if (changed) dispatch({ type: 'SET_PROJECT', project: next });
   };
+
+  const handleToolCalls = (calls: AiToolCall[]) => {
+    // batch-apply against the latest state so multiple calls don't clobber
+    // each other (and edits made while the model was thinking are kept)
+    const next = applyAiToolCalls(stateRef.current, calls, duration);
+    if (next !== stateRef.current) dispatch({ type: 'SET_PROJECT', project: next });
+  };
+
+  // Move tool: drag the preview to pan the camera. Uses the pose from drag
+  // start so each move is an absolute update (history coalesces it into one step).
+  const panRef = useRef<{ x: number; y: number; position: [number, number, number] } | null>(null);
+  const handleViewportPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (activeTab !== 'move' || !state.videoUrl) return;
+    panRef.current = { x: e.clientX, y: e.clientY, position: [...state.camera.position] };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const handleViewportPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const p = panRef.current;
+    if (!p) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const dx = ((e.clientX - p.x) / rect.width) * 16;
+    const dy = ((e.clientY - p.y) / rect.height) * 9;
+    dispatch({
+      type: 'UPDATE_CAMERA',
+      payload: {
+        position: [
+          Math.max(-8, Math.min(8, p.position[0] - dx)),
+          Math.max(-4.5, Math.min(4.5, p.position[1] + dy)),
+          p.position[2],
+        ],
+      },
+    });
+  };
+  const endViewportPan = () => { panRef.current = null; };
 
   return (
     <div className="flex h-screen w-screen bg-[#0E0E11] text-white overflow-hidden font-sans">
       <SidebarNav activeTab={activeTab} setActiveTab={setActiveTab} setShowExport={setShowExport} />
       
       <div className="flex-1 flex flex-col relative min-w-0">
-        <TopBar onSave={handleSaveProject} onOpen={handleOpenProject} />
+        <TopBar
+          onSave={handleSaveProject}
+          onOpen={handleOpenProject}
+          onOpenRecent={handleOpenRecent}
+          onUndo={undo}
+          onRedo={redo}
+          canUndo={canUndo}
+          canRedo={canRedo}
+        />
 
         <div className="flex-1 relative overflow-hidden flex flex-col">
           {activeTab === 'settings' && <SettingsView />}
           {activeTab === 'effects' && <EffectsView onEffectSelect={handleEffectSelect} />}
-          {activeTab === 'library' && <AudioLibraryView />}
+          {activeTab === 'library' && (
+            <AudioLibraryView
+              onAddSoundEffect={file => dispatch({
+                type: 'ADD_SOUND_EFFECT',
+                effect: { id: uid('sfx'), trackType: file.name, path: file.path, volume: 1, timestamp: playhead },
+              })}
+            />
+          )}
           
           {(activeTab === 'project' || activeTab === 'move' || activeTab === 'cut' || activeTab === 'ai') && (
             <>
               {state.videoUrl ? (
                 <div className="flex-1 flex min-h-0">
-                  <div className="flex-1 relative bg-[#0E0E11]">
+                  <div
+                    className={`flex-1 relative bg-[#0E0E11] ${activeTab === 'move' ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                    onPointerDown={handleViewportPointerDown}
+                    onPointerMove={handleViewportPointerMove}
+                    onPointerUp={endViewportPan}
+                    onPointerCancel={endViewportPan}
+                  >
                     <Viewport3D 
                       videoUrl={state.videoUrl}
                       cameraTransform={state.camera}
                       isCinematic={state.isCinematic}
                       dofEnabled={state.dofEnabled}
                       playhead={playhead}
+                      paused={manualPaused || activeTab === 'ai'}
                       events={state.events}
                       displaySize={state.displaySize}
                       frame={state.frame}
@@ -432,7 +537,10 @@ export default function App() {
                       motionEffects={state.motionEffects}
                     />
                     
-                    <div className="absolute top-4 right-4 max-h-[calc(100%-2rem)] overflow-y-auto bg-neutral-900/60 p-3 rounded-lg border border-neutral-800/80 backdrop-blur text-xs flex flex-col gap-3">
+                    <div
+                      className="absolute top-4 right-4 max-h-[calc(100%-2rem)] overflow-y-auto bg-neutral-900/60 p-3 rounded-lg border border-neutral-800/80 backdrop-blur text-xs flex flex-col gap-3"
+                      onPointerDown={e => e.stopPropagation()}
+                    >
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-neutral-400">Camera</span>
                         <button
@@ -556,7 +664,15 @@ export default function App() {
                     </div>
                   </div>
                   
-                  {activeTab === 'ai' && <SidebarAgent onToolCall={handleToolCall} />}
+                  {activeTab === 'ai' && (
+                    <SidebarAgent
+                      state={state}
+                      duration={duration}
+                      playhead={playhead}
+                      onToolCalls={handleToolCalls}
+                      onOpenSettings={() => setActiveTab('settings')}
+                    />
+                  )}
                 </div>
               ) : (
                 <EmptyStateView
@@ -575,6 +691,8 @@ export default function App() {
                   events={state.events} 
                   soundEffects={state.soundEffects}
                   camera={state.camera}
+                  tool={activeTab === 'cut' ? 'cut' : activeTab === 'move' ? 'move' : 'select'}
+                  onRazor={handleRazor}
                   playhead={playhead}
                   onSeek={setPlayhead}
                   onSoundEffectMove={(id, newTimestamp) => {
@@ -609,6 +727,14 @@ export default function App() {
         </div>
       </div>
 
+      <TransportBar
+        playhead={playhead}
+        duration={duration}
+        onSeek={setPlayhead}
+        onPlayPause={() => setManualPaused(p => !p)}
+        paused={manualPaused || activeTab === 'ai'}
+      />
+
       {showExport && (
         <ExportModal
           onClose={() => setShowExport(false)}
@@ -632,6 +758,7 @@ export default function App() {
             webcamPath: state.webcamPath,
             cameraKeyframes: state.cameraKeyframes,
             motionEffects: state.motionEffects,
+            soundEffects: state.soundEffects,
           }}
         />
       )}

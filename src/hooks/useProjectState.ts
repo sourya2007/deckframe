@@ -1,5 +1,6 @@
-import { useReducer } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ProjectState, ProjectAction } from '../types/project';
+import { createHistory, pushHistory, redoHistory, undoHistory } from '../lib/history';
 
 const initialState: ProjectState = {
   videoUrl: null,
@@ -75,6 +76,39 @@ function reducer(state: ProjectState, action: ProjectAction): ProjectState {
   }
 }
 
+const COALESCE_MS = 500;
+
 export function useProjectState() {
-  return useReducer(reducer, initialState);
+  const [history, setHistory] = useState(() => createHistory(initialState));
+  // slider drags fire an action per pixel — merge same-type edits into one step
+  const lastAction = useRef({ type: '', at: 0 });
+
+  const dispatch = useCallback((action: ProjectAction) => {
+    const now = Date.now();
+    const coalesce = action.type !== 'SET_PROJECT'
+      && action.type === lastAction.current.type
+      && now - lastAction.current.at < COALESCE_MS;
+    lastAction.current = { type: action.type, at: now };
+
+    setHistory(h => pushHistory(h, reducer(h.present, action), coalesce));
+  }, []);
+
+  const undo = useCallback(() => {
+    lastAction.current = { type: '', at: 0 };
+    setHistory(h => undoHistory(h));
+  }, []);
+
+  const redo = useCallback(() => {
+    lastAction.current = { type: '', at: 0 };
+    setHistory(h => redoHistory(h));
+  }, []);
+
+  return {
+    state: history.present,
+    dispatch,
+    undo,
+    redo,
+    canUndo: history.past.length > 0,
+    canRedo: history.future.length > 0,
+  };
 }
