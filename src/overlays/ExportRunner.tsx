@@ -3,7 +3,7 @@ import {Viewport3D} from '../components/Viewport3D';
 import {speedAt} from '../lib/timeline';
 import type {
   CameraTransform, InteractionEvent, ZoomRegion, SpeedRegion, Annotation, Caption, FrameStyle, WebcamStyle,
-  CameraKeyframe, MotionEffect, SoundEffect,
+  CameraKeyframe, MotionEffect, SoundEffect, CursorStyleSettings,
 } from '../types/project';
 
 // Hidden export window: plays the recording through the shared 3D scene,
@@ -26,6 +26,7 @@ interface ExportScene {
   captions?: Caption[];
   frame?: FrameStyle;
   webcam?: WebcamStyle;
+  cursor?: CursorStyleSettings;
   webcamPath?: string | null;
   cameraKeyframes?: CameraKeyframe[];
   motionEffects?: MotionEffect[];
@@ -208,6 +209,7 @@ export function ExportRunner() {
         captions={scene.captions ?? []}
         webcamUrl={scene.webcamPath ? toFileUrl(scene.webcamPath) : null}
         webcam={scene.webcam}
+        cursor={scene.cursor}
         zoomRegions={scene.zoomRegions ?? []}
         cameraKeyframes={scene.cameraKeyframes ?? []}
         motionEffects={scene.motionEffects ?? []}

@@ -4,7 +4,7 @@ const assert = require('assert');
 const path = require('path');
 const {
   cursorAt, speedAt, cropAt, cropMap, autoZoomRegions, activeCaption, activeAnnotations, activeRipples, toNormalized,
-  cameraAtTime, motionAt, splitRanges,
+  cameraAtTime, motionAt, splitRanges, latestClick,
 } = require(path.resolve(process.argv[2]));
 
 const display = { width: 1920, height: 1080, x: 0, y: 0 };
@@ -21,6 +21,15 @@ const events = [
 assert.deepStrictEqual(cursorAt(events, display, 500), { x: 0.1, y: 0.1 });
 assert.deepStrictEqual(cursorAt(events, display, 900), { x: 0.8, y: 0.8 });
 assert.deepStrictEqual(cursorAt(events, display, 1200), { x: 0.5, y: 0.5 });
+assert.deepStrictEqual(latestClick(events, display, 900), { x: 0.8, y: 0.8, age: 100 });
+assert.strictEqual(latestClick(events, display, 700), null);
+// two consecutive moves interpolate
+const moves = [
+  { timestamp: 0, type: 'move', coordinates: { x: 192, y: 108 }, details: {} },
+  { timestamp: 1000, type: 'move', coordinates: { x: 960, y: 540 }, details: {} },
+];
+const halfway = cursorAt(moves, display, 500);
+assert.ok(Math.abs(halfway.x - 0.3) < 1e-9 && Math.abs(halfway.y - 0.3) < 1e-9, 'moves should interpolate');
 assert.strictEqual(activeRipples(events, display, 1000).length, 1); // click at 800, age 200
 assert.strictEqual(activeRipples(events, display, 1500).length, 0);
 

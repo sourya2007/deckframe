@@ -5,10 +5,19 @@ import { EffectComposer, DepthOfField, Glitch, Vignette } from '@react-three/pos
 import * as THREE from 'three';
 import type {
   CameraTransform, InteractionEvent, FrameStyle, Annotation, Caption, WebcamStyle, ZoomRegion,
-  CameraKeyframe, MotionEffect,
+  CameraKeyframe, MotionEffect, CursorStyleSettings, CursorVisualStyle,
 } from '../types/project';
-import { cursorAt, activeRipples, activeAnnotations, activeCaption, cropAt, cropMap, cameraAtTime, motionAt } from '../lib/timeline';
+import { cursorAt, latestClick, activeAnnotations, activeCaption, cropAt, cropMap, cameraAtTime, motionAt } from '../lib/timeline';
 import type { DisplayInfo, Crop } from '../lib/timeline';
+import {
+  DEFAULT_CURSOR_SETTINGS, createSpringState, stepSpring, cursorSpringConfig,
+  swaySpringConfig, swayTargetRotation, clickVisualState, clickBounceScale,
+} from '../lib/cursor';
+import { wallpaperUrl } from '../lib/wallpapers';
+import tahoeCursorUrl from '../assets/cursors/tahoe.svg';
+import macosCursorUrl from '../assets/cursors/macos.svg';
+import windows11CursorUrl from '../assets/cursors/windows11.svg';
+import figmaCursorUrl from '../assets/cursors/figma.svg';
 
 // The scene plane is 16x9 world units; every overlay renders as a mesh so the
 // WebGL canvas capture at export time includes it.
@@ -34,6 +43,7 @@ interface Viewport3DProps {
   playbackRate?: number;
   webcamUrl?: string | null;
   webcam?: WebcamStyle;
+  cursor?: CursorStyleSettings;
   zoomRegions?: ZoomRegion[];
   // phase 4: keyframed camera + motion effect regions
   cameraKeyframes?: CameraKeyframe[];
@@ -61,9 +71,9 @@ function useCanvasTexture(draw: (ctx: CanvasRenderingContext2D, w: number, h: nu
   }, deps);
 }
 
-function VideoPlane({ url, playhead, externalVideo, freeRun, paused, scale, rounded, playbackRate, crop }: {
+function VideoPlane({ url, playhead, externalVideo, freeRun, paused, scale, radius, playbackRate, crop }: {
   url: string | null; playhead: number; externalVideo?: HTMLVideoElement | null; freeRun?: boolean; paused?: boolean;
-  scale: number; rounded: boolean; playbackRate?: number; crop: Crop;
+  scale: number; radius: number; playbackRate?: number; crop: Crop;
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -81,14 +91,15 @@ function VideoPlane({ url, playhead, externalVideo, freeRun, paused, scale, roun
   });
 
   // rounded-corner mask (white inside, black outside) for the alphaMap
+  const rounded = radius > 0;
   const alphaTex = useCanvasTexture((ctx, w, h) => {
     ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
     ctx.fillStyle = '#fff';
-    const r = Math.min(w, h) * 0.045;
+    const r = (Math.min(w, h) * Math.min(50, Math.max(0, radius))) / 100;
     ctx.beginPath();
     ctx.roundRect(2, 2, w - 4, h - 4, r);
     ctx.fill();
-  }, [rounded], 512, 288);
+  }, [radius], 512, 288);
 
   useEffect(() => {
     if (!url && !externalVideo) return;
@@ -153,7 +164,56 @@ function VideoPlane({ url, playhead, externalVideo, freeRun, paused, scale, roun
   );
 }
 
+// wallpaper textures are async; keep the previous one on screen until the new
+// image decodes so switching wallpapers doesn't flash the fallback color
+function useWallpaperTexture(frame: FrameStyle) {
+  const url = frame.mode === 'image' ? wallpaperUrl(frame.wallpaper) : null;
+  const key = url ? `${url}|${frame.blur}|${frame.colorA}` : '';
+  const [entry, setEntry] = useState<{ key: string; tex: THREE.CanvasTexture } | null>(null);
+
+  useEffect(() => {
+    if (!url) {
+      setEntry(null);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      const w = 1920, h = 1080;
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = frame.colorA;
+      ctx.fillRect(0, 0, w, h);
+
+      const blur = Math.max(0, Math.min(8, frame.blur));
+      // overscan so the blur doesn't fade out at the canvas edges
+      const pad = blur * 2;
+      const scale = Math.max((w + pad * 2) / img.naturalWidth, (h + pad * 2) / img.naturalHeight);
+      const dw = img.naturalWidth * scale;
+      const dh = img.naturalHeight * scale;
+      ctx.filter = blur > 0 ? `blur(${blur}px)` : 'none';
+      ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+      ctx.filter = 'none';
+
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      setEntry({ key, tex });
+    };
+    img.onerror = () => { if (!cancelled) setEntry(null); };
+    img.src = url;
+    return () => { cancelled = true; };
+  }, [key, url, frame.blur, frame.colorA]);
+
+  useEffect(() => () => { entry?.tex.dispose(); }, [entry]);
+
+  return entry?.tex ?? null;
+}
+
 function BackgroundPlane({ frame }: { frame: FrameStyle }) {
+  const wallpaperTex = useWallpaperTexture(frame);
   const tex = useCanvasTexture((ctx, w, h) => {
     if (frame.mode === 'gradient') {
       const g = ctx.createLinearGradient(0, 0, 0, h);
@@ -182,6 +242,12 @@ function BackgroundPlane({ frame }: { frame: FrameStyle }) {
         <planeGeometry args={[16, 9]} />
         <meshBasicMaterial map={tex} />
       </mesh>
+      {wallpaperTex && (
+        <mesh position={[0, 0, -0.19]}>
+          <planeGeometry args={[16, 9]} />
+          <meshBasicMaterial map={wallpaperTex} />
+        </mesh>
+      )}
       {frame.borderWidth > 0 && (() => {
         const vs = contentScale(frame);
         return (
@@ -195,43 +261,419 @@ function BackgroundPlane({ frame }: { frame: FrameStyle }) {
   );
 }
 
-function CursorOverlay({ events, display, playhead, vs, crop }: {
+// soft drop shadow behind the video; three passes approximate Recordly's CSS
+// drop-shadow stack (wide + medium + tight)
+function ShadowPlane({ frame, vs }: { frame: FrameStyle; vs: number }) {
+  const tex = useCanvasTexture((ctx, w, h) => {
+    const s = Math.max(0, Math.min(1, frame.shadow));
+    if (s <= 0) return;
+    ctx.clearRect(0, 0, w, h);
+    const vw = w * 0.8, vh = h * 0.8;
+    const vx = (w - vw) / 2, vy = (h - vh) / 2;
+    const r = (vh * Math.min(50, Math.max(0, frame.radius))) / 100;
+    for (const [blur, dy, alpha] of [[16, 4, 0.7], [5.5, 1.4, 0.5], [2.5, 0.6, 0.3]]) {
+      ctx.save();
+      ctx.shadowColor = `rgba(0, 0, 0, ${(alpha * s).toFixed(3)})`;
+      ctx.shadowBlur = blur * s;
+      ctx.shadowOffsetY = dy * s;
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.roundRect(vx, vy, vw, vh, r);
+      ctx.fill();
+      ctx.restore();
+    }
+    // punch out the video area so only the halo remains (no hard black edge)
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.roundRect(vx, vy, vw, vh, r);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }, [frame.shadow, frame.radius], 640, 360);
+
+  return (
+    <mesh position={[0, 0, -0.06]}>
+      <planeGeometry args={[20 * vs, 11.25 * vs]} />
+      <meshBasicMaterial map={tex} transparent depthWrite={false} />
+    </mesh>
+  );
+}
+
+interface CursorAssetSpec {
+  url: string | null;
+  anchorX: number;
+  anchorY: number;
+  sizeMultiplier: number;
+  preserveCanvas: boolean;
+}
+
+// hotspots/scale factors mirror Recordly's cursor assets; anchors are
+// fractions of the full SVG and get re-based to the alpha-trimmed canvas
+const CURSOR_ASSETS: Record<CursorVisualStyle, CursorAssetSpec> = {
+  tahoe: { url: tahoeCursorUrl, anchorX: 0.14, anchorY: 0.06, sizeMultiplier: 1, preserveCanvas: false },
+  macos: {
+    url: macosCursorUrl, anchorX: 0.34, anchorY: 0.24,
+    sizeMultiplier: (851 / 958) / (386 / 746), preserveCanvas: false,
+  },
+  windows11: { url: windows11CursorUrl, anchorX: 0, anchorY: 0, sizeMultiplier: 32 / 19.0625, preserveCanvas: true },
+  figma: { url: figmaCursorUrl, anchorX: 40 / 396, anchorY: 22 / 433, sizeMultiplier: 1, preserveCanvas: false },
+  dot: { url: null, anchorX: 0.5, anchorY: 0.5, sizeMultiplier: 1, preserveCanvas: true },
+};
+
+interface LoadedCursorSprite {
+  texture: THREE.Texture;
+  aspect: number;
+  anchorX: number;
+  anchorY: number;
+}
+
+function loadImage(url: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('cursor image failed to load'));
+    img.src = url;
+  });
+}
+
+function alphaBounds(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  const data = ctx.getImageData(0, 0, w, h).data;
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (data[(y * w + x) * 4 + 3] < 8) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  return maxX >= 0 ? { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 } : null;
+}
+
+function drawDotCursor() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 112;
+  const ctx = canvas.getContext('2d')!;
+  const r = 26;
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.88)';
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.arc(56, 56, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  return canvas;
+}
+
+async function loadCursorSprite(style: CursorVisualStyle): Promise<LoadedCursorSprite> {
+  const spec = CURSOR_ASSETS[style];
+  let canvas: HTMLCanvasElement;
+  let anchorX = spec.anchorX;
+  let anchorY = spec.anchorY;
+
+  if (!spec.url) {
+    canvas = drawDotCursor();
+  } else {
+    const img = await loadImage(spec.url);
+    const scale = Math.max(1, 512 / Math.max(1, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const source = document.createElement('canvas');
+    source.width = w;
+    source.height = h;
+    const sourceCtx = source.getContext('2d')!;
+    sourceCtx.drawImage(img, 0, 0, w, h);
+
+    if (spec.preserveCanvas) {
+      canvas = source;
+    } else {
+      const bounds = alphaBounds(sourceCtx, w, h);
+      if (!bounds) {
+        canvas = source;
+      } else {
+        canvas = document.createElement('canvas');
+        canvas.width = bounds.w;
+        canvas.height = bounds.h;
+        canvas.getContext('2d')!.drawImage(source, bounds.x, bounds.y, bounds.w, bounds.h, 0, 0, bounds.w, bounds.h);
+        anchorX = (spec.anchorX * w - bounds.x) / bounds.w;
+        anchorY = (spec.anchorY * h - bounds.y) / bounds.h;
+      }
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  return { texture, aspect: canvas.width / canvas.height, anchorX, anchorY };
+}
+
+function useCursorSprite(style: CursorVisualStyle) {
+  const [sprite, setSprite] = useState<LoadedCursorSprite | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let loaded: LoadedCursorSprite | null = null;
+    setSprite(null);
+    loadCursorSprite(style)
+      .then(next => {
+        if (cancelled) {
+          next.texture.dispose();
+          return;
+        }
+        loaded = next;
+        setSprite(next);
+      })
+      .catch(err => console.warn('Cursor asset failed:', err));
+    return () => {
+      cancelled = true;
+      loaded?.texture.dispose();
+    };
+  }, [style]);
+  return sprite;
+}
+
+// click effects are drawn into one canvas texture; 24 world units covers the
+// largest cursor/effect-scale combination without clipping
+const EFFECT_EXTENT = 24;
+const EFFECT_CANVAS = 1024;
+
+function hexToRgba(hex: string, alpha: number) {
+  const raw = hex.replace('#', '');
+  const full = raw.length === 3 ? raw.split('').map(c => c + c).join('') : raw;
+  const n = Number.parseInt(full, 16);
+  const a = Math.max(0, Math.min(1, alpha)).toFixed(3);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+function drawClickEffect(
+  canvas: HTMLCanvasElement,
+  settings: CursorStyleSettings,
+  cursorSizePx: number,
+  progress: number,
+) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (settings.clickEffect === 'none' || progress <= 0) return;
+
+  const refPx = (EFFECT_EXTENT * 120) / canvas.width; // reference px per canvas px
+  ctx.save();
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.scale(1 / refPx, 1 / refPx);
+
+  const reveal = 1 - progress;
+  const alpha = progress * settings.clickEffectOpacity;
+  const color = settings.clickEffectColor;
+  const baseRadius = Math.max(12, cursorSizePx * 0.55 * settings.clickEffectScale);
+  const strokeWidth = Math.max(2, cursorSizePx * 0.08);
+
+  if (settings.clickEffect === 'ripple') {
+    const eased = 1 - Math.pow(progress, 3);
+    const fade = Math.pow(progress, 3);
+    ctx.lineWidth = Math.max(1, 2 * fade);
+    ctx.strokeStyle = hexToRgba(color, Math.max(0, Math.min(1, fade * 0.6 * settings.clickEffectOpacity)));
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(0.5, eased * cursorSizePx * 1.95 * settings.clickEffectScale), 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (settings.clickEffect === 'spotlight') {
+    const glowRadius = baseRadius + reveal * cursorSizePx * settings.clickEffectScale;
+    const innerRadius = Math.max(baseRadius * 0.72, glowRadius * 0.76);
+    ctx.lineWidth = Math.max(1.25, strokeWidth * 0.68);
+    ctx.strokeStyle = hexToRgba(color, alpha * 0.28);
+    ctx.beginPath();
+    ctx.arc(0, 0, glowRadius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = Math.max(1.5, strokeWidth * 0.75);
+    ctx.strokeStyle = hexToRgba(color, alpha * 0.5);
+    ctx.beginPath();
+    ctx.arc(0, 0, innerRadius, 0, Math.PI * 2);
+    ctx.stroke();
+  } else {
+    const echoOuter = baseRadius + reveal * cursorSizePx * 1.22 * settings.clickEffectScale;
+    const echoInner = Math.max(baseRadius * 0.58, echoOuter * 0.62);
+    ctx.lineWidth = strokeWidth;
+    ctx.strokeStyle = hexToRgba(color, alpha * 0.72);
+    ctx.beginPath();
+    ctx.arc(0, 0, echoOuter, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = Math.max(1.4, strokeWidth * 0.72);
+    ctx.strokeStyle = hexToRgba(color, alpha * 0.42);
+    ctx.beginPath();
+    ctx.arc(0, 0, echoInner, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = hexToRgba(color, alpha * 0.14);
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(3, baseRadius * 0.18), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function CursorOverlay({ events, display, playhead, vs, crop, settings }: {
   events: InteractionEvent[]; display: DisplayInfo; playhead: number; vs: number; crop: Crop;
+  settings: CursorStyleSettings;
 }) {
-  const cursor = useMemo(() => cursorAt(events, display, playhead), [events, display, playhead]);
-  const ripples = useMemo(() => activeRipples(events, display, playhead), [events, display, playhead]);
+  const target = useMemo(() => cursorAt(events, display, playhead), [events, display, playhead]);
+  const click = useMemo(() => latestClick(events, display, playhead), [events, display, playhead]);
+  const sprite = useCursorSprite(settings.style);
+
+  const groupRef = useRef<THREE.Group>(null);
+  const ghostRefs = useRef<Array<THREE.Group | null>>([]);
+  const effectRef = useRef<THREE.Mesh>(null);
+  const smoothX = useRef(createSpringState());
+  const smoothY = useRef(createSpringState());
+  const swaySpring = useRef(createSpringState());
+  const lastRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const trailRef = useRef<Array<{ x: number; y: number }>>([]);
+
+  const effectCanvas = useMemo(() => {
+    const c = document.createElement('canvas');
+    c.width = c.height = EFFECT_CANVAS;
+    return c;
+  }, []);
+  const effectTexture = useMemo(() => {
+    const t = new THREE.CanvasTexture(effectCanvas);
+    t.minFilter = THREE.LinearFilter;
+    return t;
+  }, [effectCanvas]);
+  useEffect(() => () => effectTexture.dispose(), [effectTexture]);
+
+  const spec = CURSOR_ASSETS[settings.style];
+  const hRef = 28 * settings.size * spec.sizeMultiplier;
+  const height = (hRef * vs) / 120; // 16 world units = 1920 reference px
+  const width = sprite ? height * sprite.aspect : height;
+  const offsetX = sprite ? (0.5 - sprite.anchorX) * width : 0;
+  const offsetY = sprite ? (sprite.anchorY - 0.5) * height : 0;
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!group || !sprite) return;
+
+    const t = playhead;
+    const mapped = target ? cropMap(crop, target.x, target.y) : null;
+    const cursorVisible = !!mapped && mapped.x >= 0 && mapped.x <= 1 && mapped.y >= 0 && mapped.y <= 1;
+
+    if (cursorVisible && mapped) {
+      group.visible = true;
+      const last = lastRef.current;
+      const dt = last ? t - last.time : 0;
+      const jump = !last || dt < 0 || dt > 100;
+      const config = cursorSpringConfig(settings.smoothing);
+
+      let nx = mapped.x;
+      let ny = mapped.y;
+      if (jump || settings.smoothing <= 0) {
+        smoothX.current.value = nx;
+        smoothX.current.velocity = 0;
+        smoothX.current.initialized = true;
+        smoothY.current.value = ny;
+        smoothY.current.velocity = 0;
+        smoothY.current.initialized = true;
+        swaySpring.current.value = 0;
+        swaySpring.current.velocity = 0;
+        swaySpring.current.initialized = true;
+        trailRef.current = [];
+      } else if (dt > 0) {
+        nx = stepSpring(smoothX.current, nx, dt, config);
+        ny = stepSpring(smoothY.current, ny, dt, config);
+      }
+
+      const [wx, wy] = toWorld(nx, ny, vs);
+      group.position.set(wx, wy, 0.1);
+
+      const clickState = clickVisualState(
+        click ? click.age : null,
+        settings.clickBounceDuration,
+        settings.clickEffectDurationMs,
+      );
+      group.scale.setScalar(clickBounceScale(clickState.bounceProgress, settings.clickBounce));
+
+      const dx = last && !jump ? wx - last.x : 0;
+      const dy = last && !jump ? wy - last.y : 0;
+      const swayTarget = jump || dt <= 0 ? 0 : swayTargetRotation(dx, dy, dt, settings.sway);
+      group.rotation.z = stepSpring(
+        swaySpring.current,
+        swayTarget,
+        jump ? 16.67 : dt,
+        swaySpringConfig(settings.smoothing),
+      );
+
+      if (dt > 0 && !jump) {
+        trailRef.current.unshift({ x: wx, y: wy });
+        if (trailRef.current.length > 9) trailRef.current.length = 9;
+      }
+
+      // ghosts approximate Pixi's directional motion-blur filter
+      const speed = (Math.hypot(dx, dy) / Math.max(1, dt)) * 16.67;
+      const motion = settings.motionBlur * Math.min(1, speed / 0.15);
+      for (let i = 0; i < 3; i++) {
+        const ghost = ghostRefs.current[i];
+        if (!ghost) continue;
+        const point = trailRef.current[(i + 1) * 2];
+        const on = !!point && motion > 0.01;
+        ghost.visible = on;
+        if (on && point) {
+          ghost.position.set(point.x, point.y, 0.09);
+          ghost.rotation.z = group.rotation.z;
+          const mesh = ghost.children[0] as THREE.Mesh;
+          (mesh.material as THREE.MeshBasicMaterial).opacity = motion * (0.22 - i * 0.055);
+        }
+      }
+
+      lastRef.current = { time: t, x: wx, y: wy };
+    } else {
+      group.visible = false;
+      lastRef.current = null;
+      trailRef.current = [];
+      for (const ghost of ghostRefs.current) {
+        if (ghost) ghost.visible = false;
+      }
+    }
+
+    const effect = effectRef.current;
+    if (effect) {
+      const clickState = clickVisualState(
+        click ? click.age : null,
+        settings.clickBounceDuration,
+        settings.clickEffectDurationMs,
+      );
+      const draw = !!click && settings.clickEffect !== 'none' && clickState.effectProgress > 0;
+      effect.visible = false;
+      if (draw && click) {
+        const p = cropMap(crop, click.x, click.y);
+        if (p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1) {
+          const [ex, ey] = toWorld(p.x, p.y, vs);
+          effect.position.set(ex, ey, 0.095);
+          drawClickEffect(effectCanvas, settings, hRef, clickState.effectProgress);
+          effectTexture.needsUpdate = true;
+          effect.visible = true;
+        }
+      }
+    }
+  });
+
+  if (!sprite) return null;
 
   return (
     <>
-      {cursor && (() => {
-        const p = cropMap(crop, cursor.x, cursor.y);
-        if (p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) return null;
-        const [x, y] = toWorld(p.x, p.y, vs);
-        return (
-          <group position={[x, y, 0.1]}>
-            <mesh>
-              <circleGeometry args={[0.085, 24]} />
-              <meshBasicMaterial color={0xffffff} transparent opacity={0.9} />
-            </mesh>
-            <mesh>
-              <ringGeometry args={[0.085, 0.115, 24]} />
-              <meshBasicMaterial color={0x000000} transparent opacity={0.5} />
-            </mesh>
-          </group>
-        );
-      })()}
-      {ripples.map((r, i) => {
-        const p = cropMap(crop, r.x, r.y);
-        if (p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) return null;
-        const [x, y] = toWorld(p.x, p.y, vs);
-        const k = r.age / 600; // 0..1 over the ripple lifetime
-        return (
-          <mesh key={i} position={[x, y, 0.09]}>
-            <ringGeometry args={[0.1 + k * 0.35, 0.16 + k * 0.42, 32]} />
-            <meshBasicMaterial color={0xffffff} transparent opacity={0.6 * (1 - k)} />
+      {[0, 1, 2].map(i => (
+        <group key={i} ref={el => { ghostRefs.current[i] = el; }} visible={false}>
+          <mesh position={[offsetX, offsetY, 0]}>
+            <planeGeometry args={[width, height]} />
+            <meshBasicMaterial map={sprite.texture} transparent opacity={0} depthWrite={false} />
           </mesh>
-        );
-      })}
+        </group>
+      ))}
+      <group ref={groupRef} visible={false}>
+        <mesh position={[offsetX, offsetY, 0]}>
+          <planeGeometry args={[width, height]} />
+          <meshBasicMaterial map={sprite.texture} transparent opacity={0.95} depthWrite={false} />
+        </mesh>
+      </group>
+      <mesh ref={effectRef} visible={false}>
+        <planeGeometry args={[EFFECT_EXTENT, EFFECT_EXTENT]} />
+        <meshBasicMaterial map={effectTexture} transparent depthWrite={false} />
+      </mesh>
     </>
   );
 }
@@ -434,7 +876,7 @@ export function Viewport3D({
   videoUrl, cameraTransform, isCinematic, dofEnabled, playhead,
   externalVideo, freeRun, onCanvas,
   events, displaySize, frame, annotations, captions, playbackRate, webcamUrl, webcam, zoomRegions,
-  cameraKeyframes, motionEffects, paused,
+  cameraKeyframes, motionEffects, paused, cursor,
 }: Viewport3DProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -482,6 +924,7 @@ export function Viewport3D({
         <ambientLight intensity={1} />
 
         {showFrame && <BackgroundPlane frame={frame!} />}
+        {showFrame && frame!.shadow > 0 && <ShadowPlane frame={frame!} vs={vs} />}
 
         <VideoPlane
           url={videoUrl}
@@ -490,12 +933,12 @@ export function Viewport3D({
           freeRun={freeRun}
           paused={paused}
           scale={vs}
-          rounded={!!frame?.rounded && showFrame}
+          radius={showFrame ? frame!.radius : 0}
           playbackRate={playbackRate}
           crop={crop}
         />
 
-        {showCursor && <CursorOverlay events={events!} display={displaySize!} playhead={playhead} vs={vs} crop={crop} />}
+        {showCursor && <CursorOverlay events={events!} display={displaySize!} playhead={playhead} vs={vs} crop={crop} settings={cursor ?? DEFAULT_CURSOR_SETTINGS} />}
         {showAnnotations && <AnnotationLayer annotations={annotations!} playhead={playhead} vs={vs} crop={crop} />}
         {showCaptions && <CaptionLayer captions={captions!} playhead={playhead} vs={vs} />}
         {showWebcam && <WebcamBubble url={webcamUrl!} style={webcam!} playhead={playhead} freeRun={freeRun} paused={paused} vs={vs} syncVideo={externalVideo} />}

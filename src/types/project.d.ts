@@ -78,11 +78,14 @@ export interface Caption {
 }
 
 export interface FrameStyle {
-  mode: 'none' | 'solid' | 'gradient';
+  mode: 'none' | 'solid' | 'gradient' | 'image';
   colorA: string;
   colorB: string;
-  padding: number;      // 0..0.3 fraction of frame
-  rounded: boolean;
+  wallpaper: string;    // built-in id or absolute path
+  blur: number;         // 0..8 px at 1920 reference width
+  shadow: number;       // 0..1
+  radius: number;       // 0..50 % of the video's short side
+  padding: number;      // 0..0.2 fraction of frame
   borderColor: string;
   borderWidth: number;  // 0..0.05
 }
@@ -92,6 +95,25 @@ export interface WebcamStyle {
   corner: 'br' | 'bl' | 'tr' | 'tl';
   size: number;         // 0.1..0.5 of frame width
   circle: boolean;
+}
+
+export type CursorVisualStyle = 'macos' | 'tahoe' | 'windows11' | 'dot' | 'figma';
+export type CursorClickEffect = 'none' | 'spotlight' | 'ripple' | 'echo';
+
+// defaults mirror Recordly's cursor section
+export interface CursorStyleSettings {
+  style: CursorVisualStyle;
+  size: number;                    // 0.5..6
+  smoothing: number;               // 0..1
+  motionBlur: number;              // 0..1
+  clickBounce: number;             // 0..2
+  clickBounceDuration: number;     // ms
+  clickEffect: CursorClickEffect;
+  clickEffectColor: string;
+  clickEffectScale: number;        // 0.5..2
+  clickEffectOpacity: number;      // 0..1
+  clickEffectDurationMs: number;   // 120..1200
+  sway: number;                    // 0..2
 }
 
 // envelope written by inputHook: display size maps click coords → video space
@@ -121,6 +143,7 @@ export interface ProjectState {
   captions: Caption[];
   frame: FrameStyle;
   webcam: WebcamStyle;
+  cursor: CursorStyleSettings;
 }
 
 export type ProjectAction =
@@ -141,4 +164,5 @@ export type ProjectAction =
   | { type: 'SET_CAPTIONS'; captions: Caption[] }
   | { type: 'SET_FRAME'; frame: Partial<FrameStyle> }
   | { type: 'SET_WEBCAM'; webcam: Partial<WebcamStyle> }
+  | { type: 'SET_CURSOR'; cursor: Partial<CursorStyleSettings> }
   | { type: 'SET_PROJECT'; project: Partial<ProjectState> };

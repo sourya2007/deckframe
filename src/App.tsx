@@ -15,7 +15,8 @@ import { TransportBar } from './components/TransportBar';
 import { autoZoomRegions, speedAt, splitRanges, uid } from './lib/timeline';
 import { applyAiToolCalls } from './lib/aiActions';
 import type { AiToolCall } from './lib/aiActions';
-import type { FrameStyle, WebcamStyle, MotionEffectType } from './types/project';
+import { WALLPAPERS } from './lib/wallpapers';
+import type { FrameStyle, WebcamStyle, MotionEffectType, CursorStyleSettings } from './types/project';
 
 const toFileUrl = (p: string) => 'file:///' + p.replace(/\\/g, '/');
 
@@ -37,6 +38,8 @@ export default function App() {
   const webcamRecorderRef = useRef<MediaRecorder | null>(null);
   const webcamChunksRef = useRef<Blob[]>([]);
   const webcamStreamRef = useRef<MediaStream | null>(null);
+  const usingNativeRef = useRef(false);
+  const wallpaperInputRef = useRef<HTMLInputElement>(null);
 
   // capture-flow handlers are registered once; read live state through refs
   const webcamEnabledRef = useRef(state.webcam.enabled);
@@ -148,50 +151,147 @@ export default function App() {
   };
 
   const stopRecordingFlow = () => {
+    if (usingNativeRef.current) {
+      void stopNativeRecording();
+      return;
+    }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
   };
 
-  const startRecordingWithSource = async () => {
+  // mic + webcam are sidecar recordings in both backends; native video comes
+  // from the WGC helper, the fallback from getDisplayMedia.
+  const startSidecarRecorders = async () => {
     try {
-      // video + system audio come from the display-media handler in main,
-      // which auto-approves the source picked in the overlay
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = micStream;
+      const micChunks: Blob[] = [];
+      micChunksRef.current = micChunks;
+      const micRecorder = new MediaRecorder(micStream);
+      micRecorderRef.current = micRecorder;
+      micRecorder.ondataavailable = (e: BlobEvent) => { if (e.data.size > 0) micChunks.push(e.data); };
+      micRecorder.start(1000);
+    } catch {
+      console.warn('Microphone unavailable — recording without mic track');
+    }
+
+    if (webcamEnabledRef.current) {
+      try {
+        const camStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+        webcamStreamRef.current = camStream;
+        const camChunks: Blob[] = [];
+        webcamChunksRef.current = camChunks;
+        const camRecorder = new MediaRecorder(camStream);
+        webcamRecorderRef.current = camRecorder;
+        camRecorder.ondataavailable = (e: BlobEvent) => { if (e.data.size > 0) camChunks.push(e.data); };
+        camRecorder.start(1000);
+      } catch {
+        console.warn('Webcam unavailable — recording without webcam track');
+      }
+    }
+  };
+
+  const stopSidecarRecorders = async () => {
+    if (micRecorderRef.current && micRecorderRef.current.state !== 'inactive') {
+      micRecorderRef.current.stop();
+    }
+    if (webcamRecorderRef.current && webcamRecorderRef.current.state !== 'inactive') {
+      webcamRecorderRef.current.stop();
+    }
+    // give the sidecar recorders a beat to flush their last chunks
+    await new Promise(r => setTimeout(r, 150));
+
+    const micBuffer = micChunksRef.current.length
+      ? await new Blob(micChunksRef.current, { type: 'audio/webm' }).arrayBuffer()
+      : undefined;
+    const webcamBuffer = webcamChunksRef.current.length
+      ? await new Blob(webcamChunksRef.current, { type: 'video/webm' }).arrayBuffer()
+      : undefined;
+    return { micBuffer, webcamBuffer };
+  };
+
+  const applyRecordingResult = async (result: {
+    videoPath: string; eventsPath?: string | null; micPath?: string | null; webcamPath?: string | null;
+  }) => {
+    dispatch({ type: 'SET_VIDEO', url: toFileUrl(result.videoPath), path: result.videoPath });
+    dispatch({ type: 'SET_SIDECARS', micPath: result.micPath ?? null, webcamPath: result.webcamPath ?? null });
+
+    if (result.eventsPath) {
+      try {
+        const eventsJson = await electronAPI!.loadEvents(result.eventsPath);
+        const parsed = JSON.parse(eventsJson);
+        // envelope {version, display, events}; older files were a bare array
+        const events = Array.isArray(parsed) ? parsed : (parsed.events ?? []);
+        const displaySize = Array.isArray(parsed) ? null : (parsed.display ?? null);
+        dispatch({ type: 'SET_EVENTS', events, displaySize });
+      } catch {
+        // events file may not exist if no interaction occurred
+      }
+    }
+  };
+
+  const resetRecordingState = () => {
+    stopAllTracks();
+    setRecordingSeconds(0);
+    setIsRecording(false);
+    usingNativeRef.current = false;
+    mediaRecorderRef.current = null;
+    micRecorderRef.current = null;
+    webcamRecorderRef.current = null;
+    recordedChunksRef.current = [];
+    micChunksRef.current = [];
+    webcamChunksRef.current = [];
+  };
+
+  const stopNativeRecording = async () => {
+    if (!usingNativeRef.current) return;
+    usingNativeRef.current = false;
+    try {
+      const result = await electronAPI!.nativeCaptureStop();
+      if (!result) throw new Error('No native recording in progress.');
+      const { micBuffer, webcamBuffer } = await stopSidecarRecorders();
+      const sidecars = await electronAPI!.saveRecordingSidecars(result.videoPath, micBuffer, webcamBuffer);
+      await applyRecordingResult({ videoPath: result.videoPath, eventsPath: result.eventsPath, ...sidecars });
+    } catch (err: any) {
+      alert(`Recording failed: ${err.message}`);
+    } finally {
+      resetRecordingState();
+    }
+  };
+
+  const startRecordingWithSource = async (sourceId: string) => {
+    try {
+      // native WGC path: H.264 MP4 with the OS cursor excluded and system
+      // audio captured through WASAPI
+      if (await electronAPI!.nativeCaptureAvailable().catch(() => false)) {
+        const nativeStart = await electronAPI!.nativeCaptureStart(sourceId);
+        if (nativeStart.ok) {
+          usingNativeRef.current = true;
+          try {
+            await electronAPI!.startRecording(sourceId, { native: true });
+          } catch (err) {
+            await electronAPI!.nativeCaptureStop().catch(() => {});
+            usingNativeRef.current = false;
+            throw err;
+          }
+          await startSidecarRecorders();
+          setRecordingSeconds(0);
+          setIsRecording(true);
+          return;
+        }
+        console.warn('Native capture failed, falling back to getDisplayMedia:', nativeStart.error);
+      }
+
+      // fallback: video + system audio come from the display-media handler in
+      // main, which auto-approves the source picked in the overlay
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: 30 },
         audio: true,
       });
       mediaStreamRef.current = stream;
 
-      // mic is a separate sidecar track, re-mixed at export time
-      try {
-        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        micStreamRef.current = micStream;
-        const micChunks: Blob[] = [];
-        micChunksRef.current = micChunks;
-        const micRecorder = new MediaRecorder(micStream);
-        micRecorderRef.current = micRecorder;
-        micRecorder.ondataavailable = (e: BlobEvent) => { if (e.data.size > 0) micChunks.push(e.data); };
-        micRecorder.start(1000);
-      } catch {
-        console.warn('Microphone unavailable — recording without mic track');
-      }
-
-      // webcam sidecar, only when the user enabled the bubble before recording
-      if (webcamEnabledRef.current) {
-        try {
-          const camStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
-          webcamStreamRef.current = camStream;
-          const camChunks: Blob[] = [];
-          webcamChunksRef.current = camChunks;
-          const camRecorder = new MediaRecorder(camStream);
-          webcamRecorderRef.current = camRecorder;
-          camRecorder.ondataavailable = (e: BlobEvent) => { if (e.data.size > 0) camChunks.push(e.data); };
-          camRecorder.start(1000);
-        } catch {
-          console.warn('Webcam unavailable — recording without webcam track');
-        }
-      }
+      await startSidecarRecorders();
 
       const chunks: Blob[] = [];
       recordedChunksRef.current = chunks;
@@ -207,59 +307,22 @@ export default function App() {
       };
 
       recorder.onstop = async () => {
-        if (micRecorderRef.current && micRecorderRef.current.state !== 'inactive') {
-          micRecorderRef.current.stop();
-        }
-        if (webcamRecorderRef.current && webcamRecorderRef.current.state !== 'inactive') {
-          webcamRecorderRef.current.stop();
-        }
-        // give the sidecar recorders a beat to flush their last chunks
-        await new Promise(r => setTimeout(r, 150));
-
+        const { micBuffer, webcamBuffer } = await stopSidecarRecorders();
         const buffer = await new Blob(chunks, { type: 'video/webm' }).arrayBuffer();
-        const micBuffer = micChunksRef.current.length
-          ? await new Blob(micChunksRef.current, { type: 'audio/webm' }).arrayBuffer()
-          : undefined;
-        const webcamBuffer = webcamChunksRef.current.length
-          ? await new Blob(webcamChunksRef.current, { type: 'video/webm' }).arrayBuffer()
-          : undefined;
-
         try {
           const result = await electronAPI!.stopRecording(buffer, micBuffer, webcamBuffer);
-          dispatch({ type: 'SET_VIDEO', url: toFileUrl(result.videoPath), path: result.videoPath });
-          dispatch({ type: 'SET_SIDECARS', micPath: result.micPath ?? null, webcamPath: result.webcamPath ?? null });
-
-          if (result.eventsPath) {
-            try {
-              const eventsJson = await electronAPI!.loadEvents(result.eventsPath);
-              const parsed = JSON.parse(eventsJson);
-              // envelope {version, display, events}; older files were a bare array
-              const events = Array.isArray(parsed) ? parsed : (parsed.events ?? []);
-              const displaySize = Array.isArray(parsed) ? null : (parsed.display ?? null);
-              dispatch({ type: 'SET_EVENTS', events, displaySize });
-            } catch {
-              // events file may not exist if no interaction occurred
-            }
-          }
+          await applyRecordingResult(result);
         } catch (err: any) {
           alert(`Recording failed: ${err.message}`);
+        } finally {
+          resetRecordingState();
         }
-
-        stopAllTracks();
-        setRecordingSeconds(0);
-        setIsRecording(false);
-        mediaRecorderRef.current = null;
-        micRecorderRef.current = null;
-        webcamRecorderRef.current = null;
-        recordedChunksRef.current = [];
-        micChunksRef.current = [];
-        webcamChunksRef.current = [];
       };
 
       stream.getVideoTracks()[0].onended = stopRecordingFlow;
 
       recorder.start(1000);
-      await electronAPI!.startRecording('display-media');
+      await electronAPI!.startRecording(sourceId);
       setRecordingSeconds(0);
       setIsRecording(true);
     } catch (err: any) {
@@ -272,20 +335,28 @@ export default function App() {
   // capture flow: pick source (overlay) → countdown (overlay) → capture
   useEffect(() => {
     if (!electronAPI) return;
-    const unsubSel = electronAPI.onSourceSelected(async () => {
+    const unsubSel = electronAPI.onSourceSelected(async (sourceId) => {
       const result = await electronAPI!.beginCountdown();
-      if (result === 'started') await startRecordingWithSource();
+      if (result === 'started') await startRecordingWithSource(sourceId);
     });
     const unsubHud = electronAPI.onHudControl(action => {
       if (action === 'stop') stopRecordingFlow();
       else if (action === 'pause') {
-        mediaRecorderRef.current?.pause();
-        micRecorderRef.current?.pause();
-        webcamRecorderRef.current?.pause();
+        if (usingNativeRef.current) {
+          void electronAPI!.nativeCapturePause();
+        } else {
+          mediaRecorderRef.current?.pause();
+          micRecorderRef.current?.pause();
+          webcamRecorderRef.current?.pause();
+        }
       } else if (action === 'resume') {
-        mediaRecorderRef.current?.resume();
-        micRecorderRef.current?.resume();
-        webcamRecorderRef.current?.resume();
+        if (usingNativeRef.current) {
+          void electronAPI!.nativeCaptureResume();
+        } else {
+          mediaRecorderRef.current?.resume();
+          micRecorderRef.current?.resume();
+          webcamRecorderRef.current?.resume();
+        }
       }
     });
     return () => { unsubSel(); unsubHud(); };
@@ -532,6 +603,7 @@ export default function App() {
                       playbackRate={speedAt(state.speedRegions, playhead)}
                       webcamUrl={state.webcamPath ? toFileUrl(state.webcamPath) : null}
                       webcam={state.webcam}
+                      cursor={state.cursor}
                       zoomRegions={state.zoomRegions}
                       cameraKeyframes={state.cameraKeyframes}
                       motionEffects={state.motionEffects}
@@ -592,39 +664,97 @@ export default function App() {
                       </div>
                       <div className="pt-2 border-t border-neutral-800 space-y-2">
                         <div className="flex justify-between items-center gap-2">
-                          <span className="text-neutral-400">Frame</span>
+                          <span className="text-neutral-400">Background</span>
                           <select
                             value={state.frame.mode}
                             onChange={e => dispatch({ type: 'SET_FRAME', frame: { mode: e.target.value as FrameStyle['mode'] } })}
                             className="bg-neutral-950 border border-neutral-800 rounded px-1 py-0.5"
                           >
                             <option value="none">None</option>
+                            <option value="image">Image</option>
                             <option value="solid">Solid</option>
                             <option value="gradient">Gradient</option>
                           </select>
                         </div>
-                        {state.frame.mode !== 'none' && (
+                        {state.frame.mode === 'image' && (
                           <>
-                            <label className="flex justify-between items-center gap-2">
-                              <span className="text-neutral-400">Padding</span>
-                              <input
-                                type="range" min="0.02" max="0.25" step="0.01"
-                                value={state.frame.padding}
-                                onChange={e => dispatch({ type: 'SET_FRAME', frame: { padding: Number(e.target.value) } })}
-                                className="w-20 accent-blue-500"
-                              />
-                            </label>
-                            <div className="flex justify-between items-center gap-2">
-                              <span className="text-neutral-400">Colors</span>
-                              <div className="flex gap-1">
-                                <input type="color" value={state.frame.colorA}
-                                  onChange={e => dispatch({ type: 'SET_FRAME', frame: { colorA: e.target.value } })}
-                                  className="w-6 h-5 bg-transparent border-0" />
+                            <div className="grid grid-cols-6 gap-1 max-h-36 overflow-y-auto pr-1">
+                              {WALLPAPERS.map(w => (
+                                <button
+                                  key={w.id}
+                                  type="button"
+                                  title={w.label}
+                                  onClick={() => dispatch({ type: 'SET_FRAME', frame: { wallpaper: w.id } })}
+                                  className={`aspect-video overflow-hidden rounded border ${state.frame.wallpaper === w.id ? 'border-blue-500' : 'border-neutral-800 hover:border-neutral-600'}`}
+                                >
+                                  <img src={w.url} alt={w.label} loading="lazy" className="w-full h-full object-cover" />
+                                </button>
+                              ))}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => wallpaperInputRef.current?.click()}
+                              className="w-full rounded border border-neutral-800 bg-neutral-900/60 px-2 py-1 text-neutral-300 hover:border-neutral-600"
+                            >
+                              Custom image…
+                            </button>
+                            <input
+                              ref={wallpaperInputRef}
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={e => {
+                                const file = e.target.files?.[0];
+                                e.target.value = '';
+                                if (!file) return;
+                                const path = window.electronAPI?.filePathForFile?.(file);
+                                dispatch({ type: 'SET_FRAME', frame: { mode: 'image', wallpaper: path || URL.createObjectURL(file) } });
+                              }}
+                            />
+                          </>
+                        )}
+                        {(state.frame.mode === 'solid' || state.frame.mode === 'gradient') && (
+                          <div className="flex justify-between items-center gap-2">
+                            <span className="text-neutral-400">Colors</span>
+                            <div className="flex gap-1">
+                              <input type="color" value={state.frame.colorA}
+                                onChange={e => dispatch({ type: 'SET_FRAME', frame: { colorA: e.target.value } })}
+                                className="w-6 h-5 bg-transparent border-0" />
+                              {state.frame.mode === 'gradient' && (
                                 <input type="color" value={state.frame.colorB}
                                   onChange={e => dispatch({ type: 'SET_FRAME', frame: { colorB: e.target.value } })}
                                   className="w-6 h-5 bg-transparent border-0" />
-                              </div>
+                              )}
                             </div>
+                          </div>
+                        )}
+                        {state.frame.mode !== 'none' && (
+                          <>
+                            {([
+                              ['Padding', 'padding', 0, 100, 1],
+                              ['Blur', 'blur', 0, 8, 0.25],
+                              ['Shadow', 'shadow', 0, 1, 0.01],
+                              ['Radius', 'radius', 0, 50, 0.1],
+                            ] as const).map(([label, key, min, max, step]) => (
+                              <label key={key} className="flex items-center gap-2 text-neutral-400">
+                                <span className="w-14">{label}</span>
+                                <input
+                                  type="range" min={min} max={max} step={step}
+                                  value={key === 'padding' ? Math.round(state.frame.padding * 500) : state.frame[key]}
+                                  onChange={e => {
+                                    const value = Number(e.target.value);
+                                    dispatch({
+                                      type: 'SET_FRAME',
+                                      frame: key === 'padding' ? { padding: value / 500 } : { [key]: value } as Partial<FrameStyle>,
+                                    });
+                                  }}
+                                  className="flex-1 accent-blue-500"
+                                />
+                                <span className="w-8 text-right text-neutral-300">
+                                  {key === 'padding' ? Math.round(state.frame.padding * 500) : state.frame[key].toFixed(key === 'blur' ? 1 : 2)}
+                                </span>
+                              </label>
+                            ))}
                           </>
                         )}
                         <div className="flex justify-between items-center gap-2">
@@ -651,6 +781,79 @@ export default function App() {
                         </div>
                         {state.webcam.enabled && !state.webcamPath && (
                           <div className="text-[10px] text-amber-500/80">Enable webcam before recording to capture it.</div>
+                        )}
+                      </div>
+                      <div className="pt-2 border-t border-neutral-800 space-y-2">
+                        <div className="flex justify-between items-center gap-2">
+                          <span className="text-neutral-400">Cursor</span>
+                          <select
+                            value={state.cursor.style}
+                            onChange={e => dispatch({ type: 'SET_CURSOR', cursor: { style: e.target.value as CursorStyleSettings['style'] } })}
+                            className="bg-neutral-950 border border-neutral-800 rounded px-1 py-0.5"
+                          >
+                            <option value="tahoe">Tahoe</option>
+                            <option value="macos">macOS</option>
+                            <option value="windows11">Windows 11</option>
+                            <option value="figma">Figma</option>
+                            <option value="dot">Dot</option>
+                          </select>
+                        </div>
+                        {([
+                          ['Size', 'size', 0.5, 6, 0.05],
+                          ['Smooth', 'smoothing', 0, 1, 0.01],
+                          ['Blur', 'motionBlur', 0, 1, 0.01],
+                          ['Bounce', 'clickBounce', 0, 2, 0.1],
+                          ['Sway', 'sway', 0, 2, 0.05],
+                        ] as const).map(([label, key, min, max, step]) => (
+                          <label key={key} className="flex items-center gap-2 text-neutral-400">
+                            <span className="w-12">{label}</span>
+                            <input
+                              type="range" min={min} max={max} step={step}
+                              value={state.cursor[key]}
+                              onChange={e => dispatch({ type: 'SET_CURSOR', cursor: { [key]: Number(e.target.value) } })}
+                              className="flex-1 accent-blue-500"
+                            />
+                            <span className="w-8 text-right text-neutral-300">{state.cursor[key].toFixed(2)}</span>
+                          </label>
+                        ))}
+                        <div className="flex justify-between items-center gap-2">
+                          <span className="text-neutral-400">Click FX</span>
+                          <select
+                            value={state.cursor.clickEffect}
+                            onChange={e => dispatch({ type: 'SET_CURSOR', cursor: { clickEffect: e.target.value as CursorStyleSettings['clickEffect'] } })}
+                            className="bg-neutral-950 border border-neutral-800 rounded px-1 py-0.5"
+                          >
+                            <option value="none">None</option>
+                            <option value="ripple">Ripple</option>
+                            <option value="spotlight">Spotlight</option>
+                            <option value="echo">Echo</option>
+                          </select>
+                        </div>
+                        {state.cursor.clickEffect !== 'none' && (
+                          <>
+                            <label className="flex justify-between items-center gap-2 text-neutral-400">
+                              <span>FX Color</span>
+                              <input type="color" value={state.cursor.clickEffectColor}
+                                onChange={e => dispatch({ type: 'SET_CURSOR', cursor: { clickEffectColor: e.target.value } })}
+                                className="w-6 h-5 bg-transparent border-0" />
+                            </label>
+                            {([
+                              ['FX Size', 'clickEffectScale', 0.5, 2, 0.05],
+                              ['FX Opacity', 'clickEffectOpacity', 0, 1, 0.01],
+                              ['FX Duration', 'clickEffectDurationMs', 120, 1200, 10],
+                            ] as const).map(([label, key, min, max, step]) => (
+                              <label key={key} className="flex items-center gap-2 text-neutral-400">
+                                <span className="w-16">{label}</span>
+                                <input
+                                  type="range" min={min} max={max} step={step}
+                                  value={state.cursor[key]}
+                                  onChange={e => dispatch({ type: 'SET_CURSOR', cursor: { [key]: Number(e.target.value) } })}
+                                  className="flex-1 accent-blue-500"
+                                />
+                                <span className="w-8 text-right text-neutral-300">{state.cursor[key].toFixed(0)}</span>
+                              </label>
+                            ))}
+                          </>
                         )}
                       </div>
                       <label className="flex items-center gap-2 mt-1">
@@ -682,6 +885,8 @@ export default function App() {
                   recordingTimer={formatTime(recordingSeconds)}
                   webcamEnabled={state.webcam.enabled}
                   onToggleWebcam={enabled => dispatch({ type: 'SET_WEBCAM', webcam: { enabled } })}
+                  frame={state.frame}
+                  onFrameChange={frame => dispatch({ type: 'SET_FRAME', frame })}
                 />
               )}
               
@@ -755,6 +960,7 @@ export default function App() {
             captions: state.captions,
             frame: state.frame,
             webcam: state.webcam,
+            cursor: state.cursor,
             webcamPath: state.webcamPath,
             cameraKeyframes: state.cameraKeyframes,
             motionEffects: state.motionEffects,

@@ -9,8 +9,9 @@
     "dev:electron": "tsc -p tsconfig.main.json && electron .",
     "prebuild": "node scripts/generate-icon.js",
     "build": "tsc -p tsconfig.main.json && vite build",
-    "smoke": "tsc src/lib/timeline.ts src/lib/history.ts --outDir .tmp-smoke --module commonjs --target ES2022 --skipLibCheck && node scripts/_timeline-smoke.js .tmp-smoke/timeline.js && node scripts/_history-smoke.js .tmp-smoke/history.js",
-    "dist:win": "npm run build && electron-builder --win nsis portable --publish=never"
+    "smoke": "tsc src/lib/timeline.ts src/lib/history.ts src/lib/cursor.ts --outDir .tmp-smoke --module commonjs --target ES2022 --skipLibCheck && node scripts/_timeline-smoke.js .tmp-smoke/timeline.js && node scripts/_history-smoke.js .tmp-smoke/history.js && node scripts/_cursor-smoke.js .tmp-smoke/cursor.js",
+    "build:windows-capture": "node scripts/build-windows-capture.mjs",
+    "dist:win": "npm run build:windows-capture && npm run build && electron-builder --win nsis portable --publish=never"
   },
   "dependencies": {
     "@react-three/drei": "^9.121.4",

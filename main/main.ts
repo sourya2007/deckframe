@@ -4,8 +4,12 @@ import fs from 'fs';
 import { spawn } from 'child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import { setupInputHook, stopInputHook, pauseInputHook, resumeInputHook } from './inputHook';
-import { stopRecording } from './recorder';
+import { stopRecording, writeRecordingSidecars } from './recorder';
 import { hideOsCursor, restoreOsCursor } from './cursorHider';
+import {
+  isNativeCaptureAvailable, isNativeCaptureActive, startNativeCapture, stopNativeCapture,
+  pauseNativeCapture, resumeNativeCapture, killNativeCapture,
+} from './nativeCapture';
 import { encodeExport, probeVideoSize, killEncode } from './exporter';
 import { aiChat } from './ai';
 import { autoUpdater } from 'electron-updater';
@@ -96,6 +100,7 @@ app.on('will-quit', () => {
   if (countdownTimer) clearInterval(countdownTimer);
   if (hudTimer) clearInterval(hudTimer);
   restoreOsCursor();
+  killNativeCapture();
   closeAllOverlays();
 });
 process.on('exit', restoreOsCursor);
@@ -178,12 +183,14 @@ ipcMain.handle('get-sources', async (_e, opts?: { thumbnails?: boolean }) => {
   }));
 });
 
-ipcMain.handle('start-recording', async (_, sourceId: string) => {
+ipcMain.handle('start-recording', async (_, sourceId: string, opts?: { native?: boolean }) => {
   if (isRecordingActive) return process.hrtime.bigint().toString();
   const startTime = process.hrtime.bigint();
   try {
     await setupInputHook(startTime, (ev) => mainWindow?.webContents.send('cursor-telemetry', ev));
-    if (userSettings().hideCursorDuringRecording !== false) hideOsCursor();
+    // the native WGC helper never captures the OS cursor, so only the
+    // Electron capture fallback needs the system cursor hidden
+    if (!opts?.native && userSettings().hideCursorDuringRecording !== false) hideOsCursor();
     isRecordingActive = true;
     diag(`recording-start source=${sourceId}`);
     showHud();
@@ -219,6 +226,30 @@ ipcMain.handle('stop-recording', async (_, chunks: Uint8Array, micChunks?: Uint8
     restoreOsCursor();
   }
 });
+
+// ---- native WGC capture (Windows) ----
+
+ipcMain.handle('native-capture-available', async () => isNativeCaptureAvailable());
+
+ipcMain.handle('native-capture-start', async (_e, sourceId: string) => startNativeCapture(sourceId));
+
+ipcMain.handle('native-capture-stop', async () => {
+  try {
+    return await stopNativeCapture();
+  } finally {
+    isRecordingActive = false;
+    if (hudTimer) { clearInterval(hudTimer); hudTimer = null; }
+    hudPausedAt = null;
+    closeOverlay('hud-overlay');
+  }
+});
+
+ipcMain.handle('native-capture-pause', async () => { pauseNativeCapture(); });
+
+ipcMain.handle('native-capture-resume', async () => { resumeNativeCapture(); });
+
+ipcMain.handle('save-recording-sidecars', async (_e, videoPath: string, mic?: Uint8Array, webcam?: Uint8Array) =>
+  writeRecordingSidecars(videoPath, mic, webcam));
 
 ipcMain.handle('load-events', async (_, filePath: string) => {
   try {

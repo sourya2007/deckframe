@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "platform": "win32",
+  "arch": "x64",
+  "helpers": {
+    "wgc-capture": {
+      "binaryName": "wgc-capture.exe",
+      "binarySha256": "f38f15076fc1caca64d4d4bbed5f9552006310250677060aaa39e3b35722e816",
+      "sourceDir": "native/wgc-capture",
+      "sourceFingerprint": "639db0d401fb097e5350f1afaf348078f3fd3bcbd8725a3dbdf2a1dca825f4d0",
+      "updatedAt": "2026-11-04T19:28:33.927Z"
+    }
+  }
+}

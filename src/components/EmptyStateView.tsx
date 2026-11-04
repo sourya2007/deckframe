@@ -1,5 +1,7 @@
 import { useRef, type ChangeEvent, type DragEvent } from 'react';
 import { PlaySquare, Settings, Mic } from 'lucide-react';
+import { WALLPAPERS } from '../lib/wallpapers';
+import type { FrameStyle } from '../types/project';
 
 interface EmptyStateViewProps {
   onRecord: () => void;
@@ -8,10 +10,13 @@ interface EmptyStateViewProps {
   recordingTimer?: string;
   webcamEnabled?: boolean;
   onToggleWebcam?: (enabled: boolean) => void;
+  frame?: FrameStyle;
+  onFrameChange?: (frame: Partial<FrameStyle>) => void;
 }
 
-export function EmptyStateView({ onRecord, isRecording, onVideoImport, recordingTimer, webcamEnabled, onToggleWebcam }: EmptyStateViewProps) {
+export function EmptyStateView({ onRecord, isRecording, onVideoImport, recordingTimer, webcamEnabled, onToggleWebcam, frame, onFrameChange }: EmptyStateViewProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const wallpaperInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -145,23 +150,74 @@ export function EmptyStateView({ onRecord, isRecording, onVideoImport, recording
       <div className="w-72 bg-[#131316] p-6 flex flex-col gap-6 shrink-0 text-sm">
         <div>
           <h3 className="text-neutral-200 font-medium mb-4">Background</h3>
-          <div className="space-y-4">
-             <label className="flex items-center gap-3 text-neutral-400 cursor-pointer hover:text-neutral-300">
-               <div className="w-4 h-4 rounded-sm border border-neutral-600 bg-neutral-900"></div>
-               Image
-             </label>
-             <label className="flex items-center gap-3 text-neutral-400 cursor-pointer hover:text-neutral-300">
-               <div className="w-4 h-4 rounded-full border-4 border-neutral-700 bg-neutral-500"></div>
-               Color
-             </label>
-             <label className="flex items-center gap-3 text-neutral-400 cursor-pointer hover:text-neutral-300">
-               <div className="w-4 h-4 rounded-sm border border-neutral-600 bg-neutral-900"></div>
-               Gradient
-             </label>
-             <button className="w-full py-2.5 bg-neutral-900 border border-neutral-800 rounded-lg text-neutral-500 mt-4 hover:bg-neutral-800 hover:text-neutral-300 transition-colors">
-               Upload Custom
-             </button>
+          <div className="space-y-2">
+            {(['image', 'solid', 'gradient'] as const).map(mode => (
+              <button
+                key={mode}
+                onClick={() => onFrameChange?.({ mode })}
+                className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors ${
+                  frame?.mode === mode
+                    ? 'border-blue-500/60 bg-blue-500/10 text-neutral-100'
+                    : 'border-neutral-800 text-neutral-400 hover:text-neutral-300'
+                }`}
+              >
+                {mode === 'image' ? 'Image' : mode === 'solid' ? 'Color' : 'Gradient'}
+              </button>
+            ))}
           </div>
+          {frame?.mode === 'image' && (
+            <>
+              <div className="grid grid-cols-4 gap-1 mt-3 max-h-48 overflow-y-auto">
+                {WALLPAPERS.map(w => (
+                  <button
+                    key={w.id}
+                    title={w.label}
+                    onClick={() => onFrameChange?.({ wallpaper: w.id })}
+                    className={`aspect-video overflow-hidden rounded border ${frame.wallpaper === w.id ? 'border-blue-500' : 'border-neutral-800'}`}
+                  >
+                    <img src={w.url} alt={w.label} loading="lazy" className="h-full w-full object-cover" />
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => wallpaperInputRef.current?.click()}
+                className="w-full py-2.5 bg-neutral-900 border border-neutral-800 rounded-lg text-neutral-500 mt-3 hover:bg-neutral-800 hover:text-neutral-300 transition-colors"
+              >
+                Upload Custom
+              </button>
+              <input
+                ref={wallpaperInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={e => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!file) return;
+                  const path = window.electronAPI?.filePathForFile?.(file);
+                  onFrameChange?.({ mode: 'image', wallpaper: path || URL.createObjectURL(file) });
+                }}
+              />
+            </>
+          )}
+          {(frame?.mode === 'solid' || frame?.mode === 'gradient') && (
+            <div className="mt-3 flex items-center gap-2">
+              <input
+                type="color"
+                value={frame.colorA}
+                onChange={e => onFrameChange?.({ colorA: e.target.value })}
+                className="w-8 h-6 bg-transparent border-0"
+              />
+              {frame.mode === 'gradient' && (
+                <input
+                  type="color"
+                  value={frame.colorB}
+                  onChange={e => onFrameChange?.({ colorB: e.target.value })}
+                  className="w-8 h-6 bg-transparent border-0"
+                />
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

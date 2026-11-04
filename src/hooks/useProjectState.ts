@@ -25,8 +25,34 @@ const initialState: ProjectState = {
   speedRegions: [],
   annotations: [],
   captions: [],
-  frame: { mode: 'none', colorA: '#1a1a2e', colorB: '#16213e', padding: 0.08, rounded: true, borderColor: '#ffffff', borderWidth: 0 },
+  // matches Recordly: tahoe wallpaper, 20% padding, 67% shadow, radius 0 on Windows
+  frame: {
+    mode: 'image',
+    wallpaper: 'tahoe-light.jpg',
+    colorA: '#1a1a2e',
+    colorB: '#16213e',
+    padding: 0.04,
+    radius: 0,
+    shadow: 0.67,
+    blur: 0,
+    borderColor: '#ffffff',
+    borderWidth: 0,
+  },
   webcam: { enabled: false, corner: 'br', size: 0.22, circle: true },
+  cursor: {
+    style: 'tahoe',
+    size: 3.0,
+    smoothing: 0.67,
+    motionBlur: 0.6,
+    clickBounce: 2,
+    clickBounceDuration: 350,
+    clickEffect: 'none',
+    clickEffectColor: '#2563EB',
+    clickEffectScale: 1,
+    clickEffectOpacity: 1,
+    clickEffectDurationMs: 600,
+    sway: 0.4,
+  },
 };
 
 function reducer(state: ProjectState, action: ProjectAction): ProjectState {
@@ -69,8 +95,16 @@ function reducer(state: ProjectState, action: ProjectAction): ProjectState {
       return { ...state, frame: { ...state.frame, ...action.frame } };
     case 'SET_WEBCAM':
       return { ...state, webcam: { ...state.webcam, ...action.webcam } };
+    case 'SET_CURSOR':
+      return { ...state, cursor: { ...state.cursor, ...action.cursor } };
     case 'SET_PROJECT':
-      return { ...initialState, ...action.project };
+      return {
+        ...initialState,
+        ...action.project,
+        // older project files predate the cursor + wallpaper fields
+        cursor: { ...initialState.cursor, ...action.project.cursor },
+        frame: { ...initialState.frame, ...action.project.frame },
+      };
     default:
       return state;
   }

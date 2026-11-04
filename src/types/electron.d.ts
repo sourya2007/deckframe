@@ -37,9 +37,15 @@ export interface AiChatReply {
 export interface ElectronAPI {
   // recording
   getSources: (thumbnails?: boolean) => Promise<SourceInfo[]>;
-  startRecording: (sourceId: string) => Promise<string>;
+  startRecording: (sourceId: string, opts?: { native?: boolean }) => Promise<string>;
   stopRecording: (chunks: ArrayBuffer, micChunks?: ArrayBuffer, webcamChunks?: ArrayBuffer) => Promise<RecordingResult>;
   loadEvents: (path: string) => Promise<string>;
+  nativeCaptureAvailable: () => Promise<boolean>;
+  nativeCaptureStart: (sourceId: string) => Promise<{ ok: boolean; error?: string }>;
+  nativeCaptureStop: () => Promise<{ videoPath: string; eventsPath: string | null } | null>;
+  nativeCapturePause: () => Promise<void>;
+  nativeCaptureResume: () => Promise<void>;
+  saveRecordingSidecars: (videoPath: string, micChunks?: ArrayBuffer, webcamChunks?: ArrayBuffer) => Promise<{ micPath?: string; webcamPath?: string }>;
 
   // capture flow (main window)
   showSourceSelector: () => Promise<void>;

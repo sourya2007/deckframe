@@ -63,3 +63,20 @@ export async function stopRecording(buffer: Uint8Array, micBuffer?: Uint8Array, 
       .save(mp4Path);
   });
 }
+
+// Native WGC recordings arrive as finished MP4 files; only the renderer-owned
+// mic/webcam sidecars still need writing.
+export function writeRecordingSidecars(videoPath: string, micBuffer?: Uint8Array, webcamBuffer?: Uint8Array): { micPath?: string; webcamPath?: string } {
+  const base = videoPath.replace(/\.[^.]+$/, '');
+  let micPath: string | undefined;
+  if (micBuffer && micBuffer.length > 0) {
+    micPath = `${base}.mic.webm`;
+    fs.writeFileSync(micPath, micBuffer);
+  }
+  let webcamPath: string | undefined;
+  if (webcamBuffer && webcamBuffer.length > 0) {
+    webcamPath = `${base}.webcam.webm`;
+    fs.writeFileSync(webcamPath, webcamBuffer);
+  }
+  return { micPath, webcamPath };
+}

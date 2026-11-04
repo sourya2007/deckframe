@@ -9,10 +9,17 @@ function subscribe<T>(channel: string, cb: (payload: T) => void) {
 contextBridge.exposeInMainWorld('electronAPI', {
   // recording
   getSources: (thumbnails?: boolean) => ipcRenderer.invoke('get-sources', { thumbnails }),
-  startRecording: (sourceId: string) => ipcRenderer.invoke('start-recording', sourceId),
+  startRecording: (sourceId: string, opts?: { native?: boolean }) => ipcRenderer.invoke('start-recording', sourceId, opts),
   stopRecording: (chunks: ArrayBuffer, micChunks?: ArrayBuffer, webcamChunks?: ArrayBuffer) =>
     ipcRenderer.invoke('stop-recording', new Uint8Array(chunks), micChunks ? new Uint8Array(micChunks) : undefined, webcamChunks ? new Uint8Array(webcamChunks) : undefined),
   loadEvents: (filePath: string) => ipcRenderer.invoke('load-events', filePath),
+  nativeCaptureAvailable: () => ipcRenderer.invoke('native-capture-available'),
+  nativeCaptureStart: (sourceId: string) => ipcRenderer.invoke('native-capture-start', sourceId),
+  nativeCaptureStop: () => ipcRenderer.invoke('native-capture-stop'),
+  nativeCapturePause: () => ipcRenderer.invoke('native-capture-pause'),
+  nativeCaptureResume: () => ipcRenderer.invoke('native-capture-resume'),
+  saveRecordingSidecars: (videoPath: string, micChunks?: ArrayBuffer, webcamChunks?: ArrayBuffer) =>
+    ipcRenderer.invoke('save-recording-sidecars', videoPath, micChunks ? new Uint8Array(micChunks) : undefined, webcamChunks ? new Uint8Array(webcamChunks) : undefined),
 
   // projects
   saveProject: (projectJson: string) => ipcRenderer.invoke('save-project', projectJson),

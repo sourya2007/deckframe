@@ -26,14 +26,46 @@ function upperBound(events: InteractionEvent[], t: number): number {
   return lo;
 }
 
-// cursor position at time t — every move/click/scroll is a position sample,
-// so a click snaps the cursor and later moves continue from it
+// cursor position at time t — moves interpolate between samples, but a click
+// or scroll snaps the cursor and later moves continue from it
 export function cursorAt(events: InteractionEvent[], display: DisplayInfo, t: number): { x: number; y: number } | null {
-  for (let i = upperBound(events, t) - 1; i >= 0; i--) {
+  const idx = upperBound(events, t) - 1;
+  let prevEv: InteractionEvent | null = null;
+  let prev: { x: number; y: number } | null = null;
+  for (let i = idx; i >= 0; i--) {
     const ev = events[i];
     if (ev.type !== 'move' && ev.type !== 'click' && ev.type !== 'scroll') continue;
     const p = toNormalized(ev, display);
-    if (p) return p;
+    if (!p) continue;
+    prevEv = ev;
+    prev = p;
+    break;
+  }
+  if (!prev || !prevEv) return null;
+  if (prevEv.type !== 'move' || prevEv.timestamp === t) return prev;
+
+  for (let i = idx + 1; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type !== 'move' && ev.type !== 'click' && ev.type !== 'scroll') continue;
+    const p = toNormalized(ev, display);
+    if (!p) continue;
+    // clicks are instant, and a later click would be the next anchor anyway
+    if (ev.type !== 'move') break;
+    const span = ev.timestamp - prevEv.timestamp;
+    if (span <= 0) return prev;
+    const k = Math.max(0, Math.min(1, (t - prevEv.timestamp) / span));
+    return { x: prev.x + (p.x - prev.x) * k, y: prev.y + (p.y - prev.y) * k };
+  }
+  return prev;
+}
+
+// latest click-down at or before t; drives bounce + click effects
+export function latestClick(events: InteractionEvent[], display: DisplayInfo, t: number): { x: number; y: number; age: number } | null {
+  for (let i = upperBound(events, t) - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev.type !== 'click' || ev.details.state !== 'down') continue;
+    const p = toNormalized(ev, display);
+    if (p) return { ...p, age: t - ev.timestamp };
   }
   return null;
 }
